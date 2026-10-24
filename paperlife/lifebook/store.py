@@ -25,6 +25,7 @@ class Store:
                 CREATE TABLE IF NOT EXISTS interview_preferences(id INTEGER PRIMARY KEY, profile TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, session TEXT NOT NULL, turn INTEGER NOT NULL, source_text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(session,turn,key));
                 CREATE UNIQUE INDEX IF NOT EXISTS interview_preferences_active_key ON interview_preferences(profile,key) WHERE status='active';
                 CREATE TABLE IF NOT EXISTS interview_preference_turns(session TEXT NOT NULL, turn INTEGER NOT NULL, PRIMARY KEY(session,turn));
+                CREATE TABLE IF NOT EXISTS interview_naming_answers(session TEXT PRIMARY KEY, profile TEXT NOT NULL, turn INTEGER NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
                 CREATE TABLE IF NOT EXISTS narrator_links(id INTEGER PRIMARY KEY, profile TEXT NOT NULL, token_hash TEXT UNIQUE NOT NULL, expires REAL NOT NULL, revoked INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
                 CREATE TABLE IF NOT EXISTS sources(id TEXT PRIMARY KEY, profile TEXT NOT NULL, title TEXT NOT NULL, text TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
                 CREATE TABLE IF NOT EXISTS items(id TEXT PRIMARY KEY, profile TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, answer TEXT DEFAULT '', status TEXT DEFAULT 'draft', source_ids TEXT DEFAULT '[]', time_text TEXT DEFAULT '', people TEXT DEFAULT '', place TEXT DEFAULT '', certainty TEXT DEFAULT 'unverified', version INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
@@ -34,6 +35,8 @@ class Store:
             ''')
             if 'voice_dialect' not in {r['name'] for r in db.execute('PRAGMA table_info(profiles)')}:
                 db.execute("ALTER TABLE profiles ADD COLUMN voice_dialect TEXT DEFAULT 'sichuan'")
+            if 'interviewer_name_asked' not in {r['name'] for r in db.execute('PRAGMA table_info(profiles)')}:
+                db.execute('ALTER TABLE profiles ADD COLUMN interviewer_name_asked INTEGER NOT NULL DEFAULT 0')
             if 'lease_token' not in {r['name'] for r in db.execute('PRAGMA table_info(processing_jobs)')}:
                 db.execute("ALTER TABLE processing_jobs ADD COLUMN lease_token TEXT DEFAULT ''")
             columns={r['name'] for r in db.execute('PRAGMA table_info(items)')}
@@ -94,12 +97,10 @@ class Store:
         with self.db() as db:
             return [dict(r) for r in db.execute('SELECT id,role,text,seconds FROM turns WHERE session=? ORDER BY id', (ident,))]
 
-    def record_preferences(self, session_id, turn_id, text):
+    def record_preferences(self, session_id, turn_id, text, *, naming_target=None):
         """仅记录已经落库的最终 user 原文；重复/撤销后重放不会复活偏好。"""
         from .preferences import extract_preferences
-        requested = extract_preferences(text)
-        if not requested:
-            return []
+        requested = extract_preferences(text, naming_target=naming_target)
         changed = []
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -107,6 +108,12 @@ class Store:
                                 (turn_id, session_id, 'user')).fetchone()
             if not source or source['text'] != text:
                 return []
+            # Only realtime's first final answer to its opening naming question
+            # consumes this opportunity. Failed connects/interim ASR do not.
+            if naming_target == 'interviewer_name':
+                db.execute('UPDATE profiles SET interviewer_name_asked=1 WHERE id=?', (source['profile'],))
+                db.execute('INSERT OR IGNORE INTO interview_naming_answers(session,profile,turn) VALUES(?,?,?)',
+                           (session_id, source['profile'], turn_id))
             processed = db.execute('INSERT OR IGNORE INTO interview_preference_turns(session,turn) VALUES(?,?)', (session_id, turn_id))
             if processed.rowcount == 0:
                 return []

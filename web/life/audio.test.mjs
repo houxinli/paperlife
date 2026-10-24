@@ -165,3 +165,32 @@ test('resume promise resolving while still suspended does not report playback re
     assert.equal(events.filter(event=>event.type==='audio_state').at(-1).state,'blocked');
   });
 });
+
+test('server ending stops the microphone and playback while awaiting saved confirmation',async()=>{
+  await withVoice(async({call,send,audio,events,started})=>{
+    let stops=0,closed=0,sent=0;
+    call.stream={getTracks:()=>[{stop(){stops++;}}]};
+    call.ws.readyState=1;call.ws.close=()=>closed++;call.ws.send=()=>sent++;
+    audio();
+    send({type:'ending',reason:'narrator_request'});
+    assert.equal(stops,1);assert.equal(call.ready,false);assert.equal(call.stopping,true);
+    assert.equal(started[0].stopped,true);assert.equal(closed,0);assert.equal(call.closed,false);
+    call.stop();send({type:'ending',reason:'narrator_request'});
+    send({type:'ready'});send({type:'audio_start',reply_id:'late'});audio();
+    assert.equal(call.ready,false);assert.equal(sent,0);assert.equal(stops,1);assert.equal(started.length,1);
+    assert.equal(events.some(e=>e.type==='ended'),false);
+    send({type:'ended',status:'ended'});
+    assert.equal(call.closed,true);assert.equal(call.ended,true);assert.equal(closed,1);
+  });
+});
+
+test('button stop is idempotent and disconnect during saving does not claim success',async()=>{
+  await withVoice(async({call,events})=>{
+    let sent=0;call.ws.readyState=1;call.ws.send=()=>sent++;
+    call.stop();call.stop();
+    assert.equal(sent,1);
+    call.ws.onclose();
+    assert.equal(events.some(e=>e.type==='ended'),false);
+    assert.ok(events.some(e=>e.type==='disconnected'));
+  });
+});

@@ -1,0 +1,14 @@
+{
+  "description": "Paperlife 原生小程序开发准备；需真实 AppID 和 API 配置",
+  "projectname": "paperlife",
+  "appid": "touristappid",
+  "compileType": "miniprogram",
+  "miniprogramRoot": "./",
+  "libVersion": "3.7.12",
+  "setting": { "es6": true, "minified": true, "urlCheck": true },
+  "packOptions": { "ignore": [
+    { "type": "folder", "value": "tests" },
+    { "type": "file", "value": "package.json" },
+    { "type": "file", "value": "config.example.js" }
+  ] }
+}

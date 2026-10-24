@@ -1,10 +1,11 @@
 import {VoiceCall} from './audio.js';
+import {createNarrator} from './narrator.js';
 import {createBook} from './book.js';
 import {resolveNarratorEntry} from './entry.js';
 const BASE=location.pathname.split('/life')[0];
 const $=id=>document.getElementById(id);
 let user,profile,provider,call,editing,audioUrl;
-let selectionEpoch=0;
+let selectionEpoch=0,conversationProfile=null;
 const liveRows={};
 const params=new URLSearchParams(location.search);
 const guestMode=params.get('view')==='guest';
@@ -15,8 +16,8 @@ if(guestMode){
   if(entry.hash)window.history.replaceState(null,'',location.pathname+location.search+entry.hash);
 }
 let wantedProfile=params.get('profile');
-let view=params.get('view')==='read'?'read':'talk';
-document.body.classList.toggle('simple',guestMode||view==='talk');
+let view=params.get('view')==='read'?'read':params.get('view')==='book'?'book':'talk';
+document.body.classList.toggle('simple',guestMode||view!=='read');
 let token='';try{token=localStorage.getItem('paperlife_session_token')||'';}catch{}
 const note=text=>{$('notice').textContent=text;};
 async function api(path,method='GET',body){
@@ -28,7 +29,7 @@ const action=fn=>async event=>{event?.preventDefault();try{await fn(event);}catc
 function button(text,fn,cls='secondary'){const b=document.createElement('button');b.textContent=text;b.className=cls;b.onclick=action(fn);return b;}
 function busy(value){
   $('start').hidden=value;$('stop').hidden=!value;$('silence').hidden=!value;$('orb').classList.toggle('active',value);
-  $('family-view').disabled=value;$('interview-preferences').hidden=value;
+  document.body.classList.toggle('call-active',value);$('family-view').disabled=value;$('interview-preferences').hidden=value;
   if(!value)$('resume-audio').hidden=true;
   for(const id of ['profiles','new-profile','topic','save-profile','talk-view','read-view'])$(id).disabled=value;
   document.querySelectorAll('[data-topic]').forEach(b=>b.disabled=value);
@@ -51,7 +52,7 @@ async function selectProfile(){
   const epoch=++selectionEpoch;const selected=$('profiles').value;
   $('profile-work').hidden=true;$('profiles').disabled=true;
   try{
-  const next=await api('/life/profiles/'+selected);if(epoch!==selectionEpoch)return;profile=next;
+  const next=await api('/life/profiles/'+selected);if(epoch!==selectionEpoch)return;if(conversationProfile!==next.id){conversationProfile=next.id;$('transcript').replaceChildren();delete liveRows.user;delete liveRows.assistant;narrator.reset();$('live-caption').textContent='我们从一件小事聊起。';}profile=next;
   $('profile-name').value=profile.name;$('context').value=profile.context;$('voice-dialect').value=profile.voice_dialect||'sichuan';
   $('members-panel').hidden=profile.role!=='owner';$('links-panel').hidden=profile.role!=='owner';$('generated-link-label').hidden=true;
   $('topic').value='从称呼和小时候住的地方慢慢聊起';
@@ -87,19 +88,22 @@ function onEvent(e){
   if(e.type==='ready'){$('call-state').textContent='已经接通';$('live-caption').textContent='我在这里，您慢慢说。';}
   if(e.type==='audio_state'){$('resume-audio').hidden=e.state!=='blocked';if(e.state==='blocked'){$('call-state').textContent='声音暂停了，点一下就能继续';}else if(e.state==='playing')$('call-state').textContent='拾光在说话';else if(e.state==='ready')$('call-state').textContent='我在听，您慢慢讲';}
   if(e.type==='audio_start')$('call-state').textContent='拾光在说话';
-  if(e.type==='preference_saved'){$('saved-state').textContent='记住您的聊天习惯了，以后也会留意。';}
+  if(e.type==='preference_saved'){$('saved-state').textContent='记住您的聊天习惯了，以后也会留意。';refreshNames().catch(()=>{});}
+  if(e.type==='ending'){$('call-state').textContent='听到了，我们先聊到这里。正在保存…';$('stop').disabled=true;}
   if(e.type==='saved')$('saved-state').textContent='正在记录，结束后会自动保存。';
   if(e.type==='error'||e.type==='notice')note(e.message);
   if(e.type==='transcript'){
+    if(!e.text)return;
+    const follow=$('transcript').scrollHeight-$('transcript').scrollTop-$('transcript').clientHeight<80;
     if(e.role==='assistant'&&e.text)$('live-caption').textContent=e.text;
-    let row=liveRows[e.role];if(!row){row=document.createElement('div');row.className='turn';const label=document.createElement('b');label.textContent=e.role==='user'?profile.name:'拾光 · AI';row.append(label,document.createElement('p'));$('transcript').append(row);liveRows[e.role]=row;}
-    row.lastChild.textContent=e.text;if(e.final)delete liveRows[e.role];$('transcript').scrollTop=$('transcript').scrollHeight;
+    let row=liveRows[e.role];if(!row){row=document.createElement('div');row.className='turn '+e.role;const label=document.createElement('b');label.textContent=e.role==='user'?(profile.narrator_name||profile.name):(profile.interviewer_name||'拾光')+' · AI';row.append(label,document.createElement('p'));$('transcript').append(row);liveRows[e.role]=row;}
+    row.lastChild.textContent=e.text;if(e.final)delete liveRows[e.role];if(follow)$('transcript').scrollTop=$('transcript').scrollHeight;
   }
   if(e.type==='interrupt'){$('call-state').textContent='我在听，您慢慢讲';delete liveRows.assistant;}
-  if(e.type==='ended'||e.type==='disconnected'){call=null;busy(false);$('start').textContent='再聊一会儿';const saved=e.type==='ended'&&e.status==='ended';$('call-state').textContent=saved?'这次聊天已保存':'连接断开了';$('live-caption').textContent=saved?'谢谢您，下次我们接着聊。':'点下面的按钮，重新接通。';$('saved-state').textContent=saved?'原声和文字已留存，家人可以之后整理。':'已收到的内容会保留。';history().catch(e=>note(e.message));loadPreferences().catch(e=>note(e.message));if(!guestMode)book.load().catch(e=>note(e.message));}
+  if(e.type==='ended'||e.type==='disconnected'){call=null;busy(false);$('start').textContent='再聊一会儿';const saved=e.type==='ended'&&e.status==='ended';$('call-state').textContent=saved?'这次聊天已保存':'连接断开了';$('live-caption').textContent=saved?'谢谢您，下次我们接着聊。':'点下面的按钮，重新接通。';$('saved-state').textContent=saved?'原声和文字已留存，家人可以之后整理。':'已收到的内容会保留。';history().catch(e=>note(e.message));loadPreferences().catch(e=>note(e.message));if(!guestMode)book.load().catch(e=>note(e.message));narrator.history().catch(e=>note(e.message));if(view==='book')narrator.book().catch(e=>note(e.message));$('stop').disabled=false;}
 }
 $('start').onclick=action(async()=>{
-  if(call)return;note('');busy(true);$('transcript').replaceChildren();delete liveRows.user;delete liveRows.assistant;
+  if(call)return;setView('talk');note('');busy(true);$('transcript').replaceChildren();delete liveRows.user;delete liveRows.assistant;
   $('call-state').textContent='正在打开麦克风…';$('live-caption').textContent='如果手机询问，请点“允许使用麦克风”。';
   const current=new VoiceCall(onEvent);call=current;
   try{
@@ -136,12 +140,32 @@ async function listen(track,seek=0){
 $('listen-user').onclick=action(()=>listen('user'));$('listen-ai').onclick=action(()=>listen('assistant'));
 $('export').onclick=()=>{const text=`${$('edit-title').value}\n\n${$('edit-text').value}\n\n原始转写\n${$('raw').textContent}`;const url=URL.createObjectURL(new Blob([text],{type:'text/plain;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download='人生之书-'+editing.id+'.txt';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
 const book=createBook({api,profile:()=>profile,openSession:openEditor,note});
+const narrator=createNarrator({api,profile:()=>profile,isGuest:()=>guestMode,note,fetchAudio:async path=>{
+  if(call)throw Error('结束当前聊天后，再回听录音。现在可以继续看文字。');
+  const response=await fetch(BASE+'/api'+path,{credentials:'same-origin',headers:{...(guestMode?{'X-Life-Link':guestToken}:{}),...(token?{Authorization:'Bearer '+token}:{})}});
+  if(!response.ok)throw Error('这段录音暂时无法播放。');return response.blob();
+}});
+async function refreshNames(){
+  if(!profile)return;const id=profile.id;const updated=await api(guestMode?'/life/guest':`/life/profiles/${id}`);if(profile.id!==id)return;
+  profile.interviewer_name=updated.interviewer_name;profile.narrator_name=updated.narrator_name;
+  $('interviewer-label').textContent=(profile.interviewer_name||'拾光')+' · AI采访助手';
+}
+$('toggle-conversation').onclick=()=>{
+  const collapsed=document.body.classList.toggle('conversation-collapsed');$('live-caption').hidden=!collapsed;
+  $('toggle-conversation').setAttribute('aria-expanded',String(!collapsed));$('toggle-conversation').textContent=collapsed?'展开对话':'收起对话';
+};
+$('chat-tab').onclick=()=>setView('talk');$('my-book-tab').onclick=()=>{setView('book');narrator.book().catch(e=>note(e.message));};
 function setView(next){
-  view=next;$('book-panel').hidden=view!=='read';$('interview-panel').hidden=view==='read';
-  document.body.classList.toggle('simple',guestMode||view==='talk');$('family-view').hidden=guestMode||view!=='talk';
+  view=next;$('book-panel').hidden=view!=='read';$('interview-panel').hidden=view!=='talk';$('my-book-panel').hidden=view!=='book';
+  $('narrator-nav').hidden=view==='read';$('narrator-actions').hidden=view==='read';
+  document.body.classList.toggle('simple',guestMode||view!=='read');$('family-view').hidden=guestMode||view==='read';
   document.querySelector('h1').textContent=profile?profile.name+'的人生之书':'一起聊聊从前';
-  document.querySelector('.intro').textContent=view==='talk'?'您慢慢讲，我认真听。':'原声、原文、事实与故事，分别保存。';
+  document.querySelector('.intro').textContent=view==='read'?'原声、原文、事实与故事，分别保存。':'您慢慢讲，我认真听。';
+  $('interviewer-label').textContent=(profile?.interviewer_name||'拾光')+' · AI采访助手';
   $('talk-view').className=view==='talk'?'':'secondary';$('read-view').className=view==='read'?'':'secondary';
+  $('chat-tab').setAttribute('aria-pressed',String(view==='talk'));$('my-book-tab').setAttribute('aria-pressed',String(view==='book'));
+  $('chat-tab').className=view==='talk'?'':'secondary';$('my-book-tab').className=view==='book'?'':'secondary';
+  if(view==='book'&&profile)narrator.book().catch(e=>note(e.message));
   if(!guestMode){const url=new URL(location.href);url.searchParams.set('view',view);window.history.replaceState(null,'',url);}
 }
 $('talk-view').onclick=()=>setView('talk');$('read-view').onclick=()=>setView('read');
@@ -154,7 +178,7 @@ async function refreshGuest(){
   setView('talk');await loadPreferences();
   if(!profile.configured)note('语音服务暂未准备好，请联系家人。');
 }
-const preferenceLabels={pace:'说话节奏',question_style:'提问方式',topic:'优先聊的话题'};
+const preferenceLabels={interviewer_name:'AI的称呼',narrator_name:'我的称呼',pace:'说话节奏',question_style:'提问方式',topic:'优先聊的话题'};
 const preferenceValues={slow:'慢一点',normal:'平常速度',one_at_a_time:'一次只问一个问题',home:'住处与家乡',hobbies:'平时的爱好',concrete:'具体的小问题',open:'留出自由讲述的空间',childhood:'小时候',family:'家里的人',parents:'父母',school:'读书',work:'工作与劳动',daily_life:'日常生活',everyday:'日常生活',marriage:'婚恋',free:'随意聊'};
 async function loadPreferences(){
   if(!profile)return;const id=profile.id;
@@ -168,7 +192,7 @@ async function loadPreferences(){
     label.textContent=p.key.startsWith('avoid_topic:')?'暂不主动问：'+(preferenceValues[p.key.split(':')[1]]||p.key.split(':')[1]):(preferenceLabels[p.key]||p.key)+'：'+(preferenceValues[p.value]||p.value);
     const source=document.createElement('p');source.textContent='您说：“'+p.source_text+'”';row.append(label,source);
     if(!guestMode&&p.session)row.append(button('看这段原文',()=>openEditor(p.session),'secondary'));
-    if(guestMode||profile.role!=='reader')row.append(button('撤销这条',async()=>{await api(base+'/'+encodeURIComponent(p.id),'DELETE');await loadPreferences();note('已撤销，下次聊天不再采用这条习惯。');}));
+    if(guestMode||profile.role!=='reader')row.append(button('撤销这条',async()=>{await api(base+'/'+encodeURIComponent(p.id),'DELETE');await loadPreferences();await refreshNames();note('已撤销，下次聊天不再采用这条习惯。');}));
     target.append(row);
   }
 }
