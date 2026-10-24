@@ -115,7 +115,7 @@ class RealtimeTests(unittest.IsolatedAsyncioTestCase):
                 if event==100:await self.queue.put(frame(150,{}))
                 if event==200:
                     await self.queue.put(frame(450,{}))
-                    await self.queue.put(frame(451,{'results':[{'text':'去读书','is_interim':False}]}))
+                    await self.queue.put(frame(451,{'results':[{'text':'请说慢一点。','is_interim':False}]}))
                     await self.queue.put(frame(550,{'content':'跟谁去的？'}))
                     await self.queue.put(frame(559,{}))
                     await self.queue.put(frame(352,b'\0\0'*100,11,0))
@@ -141,9 +141,11 @@ class RealtimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(remote.sent[:4],[1,100,501,200])
             self.assertIn(102,remote.sent)
             self.assertEqual(store.session(s['id'])['status'],'ended')
-            self.assertEqual([t['text'] for t in store.turns(s['id'])],['去读书','跟谁去的？','最后一句'])
+            self.assertEqual([t['text'] for t in store.turns(s['id'])],['请说慢一点。','跟谁去的？','最后一句'])
             with wave.open(str(store.audio_path(s['id']))) as wav:self.assertEqual(wav.getnframes(),320)
             self.assertEqual(client.events[-1]['type'],'ended')
+            self.assertTrue(any(e['type']=='preference_saved' for e in client.events))
+            self.assertEqual([(p['key'],p['value']) for p in store.preferences(p['id'])],[('pace','slow')])
 
 class LifeBookAccessAndContentTests(LifeBookTests):
     def test_narrator_link_is_scoped_revocable_and_not_account_login(self):

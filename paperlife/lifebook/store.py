@@ -22,6 +22,9 @@ class Store:
                 CREATE TABLE IF NOT EXISTS quality_flags(session TEXT,turn INTEGER,code TEXT,reason TEXT,ask_now INTEGER,seconds REAL,PRIMARY KEY(session,turn,code));
                 CREATE TABLE IF NOT EXISTS voice_metrics(id INTEGER PRIMARY KEY,session TEXT,kind TEXT,value_ms REAL,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
                 CREATE TABLE IF NOT EXISTS turns(id INTEGER PRIMARY KEY, session TEXT, role TEXT, text TEXT, seconds REAL);
+                CREATE TABLE IF NOT EXISTS interview_preferences(id INTEGER PRIMARY KEY, profile TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, session TEXT NOT NULL, turn INTEGER NOT NULL, source_text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(session,turn,key));
+                CREATE UNIQUE INDEX IF NOT EXISTS interview_preferences_active_key ON interview_preferences(profile,key) WHERE status='active';
+                CREATE TABLE IF NOT EXISTS interview_preference_turns(session TEXT NOT NULL, turn INTEGER NOT NULL, PRIMARY KEY(session,turn));
                 CREATE TABLE IF NOT EXISTS narrator_links(id INTEGER PRIMARY KEY, profile TEXT NOT NULL, token_hash TEXT UNIQUE NOT NULL, expires REAL NOT NULL, revoked INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
                 CREATE TABLE IF NOT EXISTS sources(id TEXT PRIMARY KEY, profile TEXT NOT NULL, title TEXT NOT NULL, text TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
                 CREATE TABLE IF NOT EXISTS items(id TEXT PRIMARY KEY, profile TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, answer TEXT DEFAULT '', status TEXT DEFAULT 'draft', source_ids TEXT DEFAULT '[]', time_text TEXT DEFAULT '', people TEXT DEFAULT '', place TEXT DEFAULT '', certainty TEXT DEFAULT 'unverified', version INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
@@ -90,6 +93,48 @@ class Store:
     def turns(self, ident):
         with self.db() as db:
             return [dict(r) for r in db.execute('SELECT id,role,text,seconds FROM turns WHERE session=? ORDER BY id', (ident,))]
+
+    def record_preferences(self, session_id, turn_id, text):
+        """仅记录已经落库的最终 user 原文；重复/撤销后重放不会复活偏好。"""
+        from .preferences import extract_preferences
+        requested = extract_preferences(text)
+        if not requested:
+            return []
+        changed = []
+        with self.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            source = db.execute('SELECT s.profile,t.text FROM turns t JOIN sessions s ON s.id=t.session WHERE t.id=? AND t.session=? AND t.role=?',
+                                (turn_id, session_id, 'user')).fetchone()
+            if not source or source['text'] != text:
+                return []
+            processed = db.execute('INSERT OR IGNORE INTO interview_preference_turns(session,turn) VALUES(?,?)', (session_id, turn_id))
+            if processed.rowcount == 0:
+                return []
+            for key, value in requested.items():
+                if db.execute('SELECT 1 FROM interview_preferences WHERE session=? AND turn=? AND key=?',
+                              (session_id, turn_id, key)).fetchone():
+                    continue
+                current = db.execute("SELECT value FROM interview_preferences WHERE profile=? AND key=? AND status='active'",
+                                     (source['profile'], key)).fetchone()
+                if current and current['value'] == value:
+                    continue
+                db.execute("UPDATE interview_preferences SET status='superseded',updated_at=CURRENT_TIMESTAMP WHERE profile=? AND key=? AND status='active'",
+                           (source['profile'], key))
+                result = db.execute('INSERT INTO interview_preferences(profile,key,value,session,turn,source_text) VALUES(?,?,?,?,?,?)',
+                                    (source['profile'], key, value, session_id, turn_id, text[:300]))
+                changed.append(dict(db.execute('SELECT id,profile,key,value,session,turn,source_text,created_at FROM interview_preferences WHERE id=?',
+                                               (result.lastrowid,)).fetchone()))
+        return changed
+
+    def preferences(self, profile_id):
+        with self.db() as db:
+            return [dict(r) for r in db.execute("SELECT id,profile,key,value,session,turn,source_text,created_at FROM interview_preferences WHERE profile=? AND status='active' ORDER BY id", (profile_id,))]
+
+    def revoke_preference(self, profile_id, preference_id):
+        with self.db() as db:
+            result = db.execute("UPDATE interview_preferences SET status='revoked',updated_at=CURRENT_TIMESTAMP WHERE id=? AND profile=? AND status='active'",
+                                (preference_id, profile_id))
+            return result.rowcount == 1
 
     def provider(self):
         path = self.root / 'provider.json'
