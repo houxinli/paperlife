@@ -136,7 +136,7 @@ class ConversationContractTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(message['type'], CONTRACT['events'])
             assert_shape(self, message, CONTRACT['events'][message['type']])
             trace.append({'event': message})
-        self.assertTrue({'ready', 'audio_sentence_end', 'answer_start', 'transcript', 'ending', 'ended'} <= names)
+        self.assertTrue({'ready', 'interrupt', 'audio_start', 'audio_sentence_end', 'audio_end', 'answer_start', 'transcript', 'ending', 'ended'} <= names)
         for track, direction in [('user', 'input'), ('assistant', 'output')]:
             with wave.open(str(self.store.audio_path(session['id'], track))) as saved:
                 spec = CONTRACT['audio'][direction]

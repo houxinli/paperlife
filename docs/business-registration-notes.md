@@ -6,7 +6,7 @@
 
 通常可以先尝试全程电子化办理，也可以委托代理人。全国[登记实施细则第14—17条](https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/fgs/art/2023/art_37bd9ff741584f9289394193fe2c3c3a.html)允许委托、电子签名和线上申请，但经营者、代理人等仍须实名。线上核验无法通过时，依法公证的身份证明或本人现场等补救方式需按登记机关要求核实，不能简单承诺人在境外必然办得完。
 
-四川有网上渠道，成都官方指南列四川政务服务网等入口。申请材料应使用[2026新版文书与材料规范](https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/djzcj/art/2026/art_3321d681741f48cfa3a8e6ef4b15cccd.html)，不要完全照抄旧教程。部分证件类型和地方事项可能另有办理方式。
+四川有网上渠道，[成都官方指南](https://cdsxjx.sczwfw.gov.cn/module/download/downfile.jsp?classid=0&filename=022497469f844ebba1f0a9563a594ec9.pdf)列四川政务服务网等入口。申请材料应使用[2026新版文书与材料规范](https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/djzcj/art/2026/art_3321d681741f48cfa3a8e6ef4b15cccd.html)，不要完全照抄旧教程。部分证件类型和地方事项可能另有办理方式。
 
 ## 家属代办与家属经营不同
 
