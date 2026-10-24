@@ -47,6 +47,6 @@ class Api {
   async logout(){try{if(this.session)await this.request('/auth/logout','POST');}finally{this.save('session','');}}
   base(profile,scope){if(scope==='guest')return '/life/guest';if(!profile||!profile.id)throw Error('请先选择档案');return '/life/profiles/'+encodeURIComponent(profile.id);}
   detail(id,scope){return scope==='guest'?'/life/guest/history/'+encodeURIComponent(id):'/life/sessions/'+encodeURIComponent(id);}
-  async startSession(profile,scope){return this.request(this.base(profile,scope)+'/sessions','POST',{topic:'从称呼和小时候住的地方慢慢聊起',transport:'wechat'},scope);}
+  async startSession(profile,scope){return this.request(this.base(profile,scope)+'/sessions','POST',{transport:'wechat'},scope);}
 }
 module.exports={Api,validateConfig,invoke};

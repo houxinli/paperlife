@@ -194,3 +194,15 @@ test('button stop is idempotent and disconnect during saving does not claim succ
     assert.ok(events.some(e=>e.type==='disconnected'));
   });
 });
+
+test('ending diagnostics keep the audio gate closed even when a late start arrives',async()=>{
+  await withVoice(async({call,send,audio,events,started})=>{
+    send({type:'audio_start',reply_id:'first',question_id:'q1'});audio();
+    send({type:'ending',reason:'narrator_request'});
+    send({type:'audio_start',reply_id:'late',question_id:'q2'});audio();
+    assert.equal(started.length,1);
+    assert.equal(events.filter(event=>event.type==='audio_diagnostic').at(-1).suppressed,true);
+    assert.equal(call.diagnostics.audioStarts,2);
+    assert.equal(call.diagnostics.suppressedChunks,1);
+  });
+});

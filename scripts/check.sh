@@ -2,6 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+node scripts/sync_shared.mjs --check
 "$PYTHON_BIN" -m unittest discover -s tests
 node --test web/life/*.test.mjs
 node --test miniprogram/tests/*.test.cjs

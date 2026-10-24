@@ -30,7 +30,7 @@ export function createNarrator({api,profile,isGuest,fetchAudio,note}){
       const player=$('past-audio');player.src=audioUrl;player.hidden=false;
       player.onloadedmetadata=()=>{player.currentTime=Math.max(0,seconds);};await player.play();
     }catch(e){note(e.message);}};
-    // 弹窗阅读不更改当前访谈状态；音轨播放明确由用户点选。
+    // 弹窗阅读不更改当前聊天状态；音轨播放明确由用户点选。
     $('past-session').showModal();
   }
   async function book(){

@@ -1,0 +1,133 @@
+{
+  "name": "paperlife-conversation",
+  "version": 1,
+  "start_session": {
+    "transports": ["web", "wechat"],
+    "default_transport": "web",
+    "topic_max_length": 200,
+    "socket_path": "/api/life/live",
+    "authentication": "first JSON message carries the one-use ticket; never put credentials in the URL"
+  },
+  "audio": {
+    "input": {"format": "s16le", "sample_rate": 16000, "channels": 1, "bytes_per_sample": 2},
+    "output": {"format": "s16le", "sample_rate": 24000, "channels": 1, "bytes_per_sample": 2}
+  },
+  "events": {
+    "ready": {"required": {"session": "string"}},
+    "interrupt": {"required": {"question_id": "nullable_string"}},
+    "answer_start": {"required": {"source": "string", "reply_id": "nullable_string", "question_id": "nullable_string"}, "enums": {"source": ["text"]}},
+    "audio_start": {"required": {"reply_id": "nullable_string", "question_id": "nullable_string"}},
+    "audio_sentence_end": {"required": {"reply_id": "nullable_string", "question_id": "nullable_string"}},
+    "audio_end": {"required": {"reply_id": "nullable_string", "question_id": "nullable_string"}},
+    "transcript": {"required": {"role": "string", "text": "string", "final": "boolean"}, "enums": {"role": ["user", "assistant"]}},
+    "preference_saved": {"required": {}},
+    "saved": {"required": {"seconds": "number"}, "minimums": {"seconds": 0}},
+    "notice": {"required": {"message": "string"}},
+    "error": {"required": {"message": "string"}},
+    "ending": {"required": {"reason": "string", "session": "string"}},
+    "ended": {"required": {"session": "string", "status": "string"}, "enums": {"status": ["ended", "interrupted"]}},
+    "voice_diagnostic": {"required": {"audio_chunks": "integer", "audio_bytes": "integer", "forwarded_audio_chunks": "integer", "provider_events": "object"}}
+  },
+  "responses": {
+    "history": {
+      "required": {"sessions": "array", "has_more": "boolean"},
+      "arrays": {"sessions": {"shape": "history_session", "maximum": 50}}
+    },
+    "history_session": {
+      "required": {"id": "string", "title": "string", "status": "string", "created_at": "string", "version": "integer"},
+      "enums": {"status": ["connecting", "active", "ended", "interrupted"]},
+      "minimums": {"version": 0}
+    },
+    "session_detail": {
+      "required": {"id": "string", "title": "string", "status": "string", "created_at": "string", "edited_text": "string", "version": "integer", "turns": "array"},
+      "minimums": {"version": 0},
+      "arrays": {"turns": {"shape": "turn"}}
+    },
+    "turn": {
+      "required": {"id": "integer", "role": "string", "text": "string", "seconds": "number"},
+      "enums": {"role": ["user", "assistant"]},
+      "minimums": {"id": 1, "seconds": 0}
+    },
+    "book": {
+      "required": {"items": "array", "pending_count": "integer"},
+      "minimums": {"pending_count": 0},
+      "arrays": {"items": {"shape": "book_item"}}
+    },
+    "book_item": {
+      "required": {"id": "string", "kind": "string", "status": "string", "title": "string", "body": "string", "evidence": "array"},
+      "enums": {"kind": ["person", "event", "fact", "story"], "status": ["confirmed"]}
+    },
+    "session_ticket": {
+      "required": {"id": "string", "ticket": "string", "status": "string"},
+      "enums": {"status": ["connecting"]},
+      "lengths": {"ticket": {"minimum": 20, "maximum": 200}}
+    }
+  },
+  "gate_scenarios": [
+    {
+      "name": "strict client waits for audio, survives sentence boundaries, rejects completed replies",
+      "options": {},
+      "steps": [
+        {"accepts": false},
+        {"event": {"type": "ready"}, "accepts": false},
+        {"event": {"type": "answer_start", "source": "text", "reply_id": "r1", "question_id": "q1"}, "accepts": false},
+        {"event": {"type": "audio_start", "reply_id": "r1", "question_id": "q1"}, "accepts": true},
+        {"event": {"type": "audio_sentence_end", "reply_id": "r1", "question_id": "q1"}, "accepts": true},
+        {"event": {"type": "audio_start", "reply_id": "r1", "question_id": "q1"}, "accepts": true},
+        {"event": {"type": "audio_end", "reply_id": "r1", "question_id": "q1"}, "accepts": false},
+        {"event": {"type": "audio_start", "reply_id": "r1", "question_id": "q1"}, "accepts": false}
+      ]
+    },
+    {
+      "name": "interrupt and local cancel suppress old replies but allow a new question",
+      "options": {},
+      "steps": [
+        {"event": {"type": "audio_start", "reply_id": "r1", "question_id": "q1"}, "accepts": true},
+        {"action": "cancel", "accepts": false},
+        {"event": {"type": "answer_start", "source": "text", "reply_id": "r1", "question_id": "q1"}, "accepts": false},
+        {"event": {"type": "audio_start", "reply_id": "late", "question_id": "q1"}, "accepts": false},
+        {"event": {"type": "interrupt", "question_id": "q2"}, "accepts": false},
+        {"event": {"type": "audio_start", "reply_id": "r1", "question_id": "q1"}, "accepts": false},
+        {"event": {"type": "audio_start", "reply_id": "r2", "question_id": "q2"}, "accepts": true},
+        {"event": {"type": "audio_end", "reply_id": "r1", "question_id": "q1"}, "accepts": true},
+        {"event": {"type": "interrupt", "question_id": "q3"}, "accepts": false},
+        {"event": {"type": "audio_start", "reply_id": "r2", "question_id": "q2"}, "accepts": false},
+        {"event": {"type": "audio_start", "reply_id": "r3", "question_id": "q3"}, "accepts": true}
+      ]
+    },
+    {
+      "name": "legacy compatibility is explicit and stops once audio boundaries appear",
+      "options": {"allowLegacyAudio": true},
+      "steps": [
+        {"accepts": true},
+        {"action": "cancel", "accepts": false},
+        {"event": {"type": "answer_start", "source": "text", "reply_id": "text"}, "accepts": false},
+        {"event": {"type": "answer_start", "reply_id": "legacy"}, "accepts": true},
+        {"event": {"type": "audio_start", "reply_id": "r1"}, "accepts": true},
+        {"event": {"type": "audio_end", "reply_id": "r1"}, "accepts": false},
+        {"event": {"type": "answer_start", "reply_id": "legacy-late"}, "accepts": false}
+      ]
+    },
+    {
+      "name": "ending is terminal even for legacy starts",
+      "options": {"allowLegacyAudio": true},
+      "steps": [
+        {"event": {"type": "ending"}, "accepts": false},
+        {"event": {"type": "answer_start", "reply_id": "legacy-late"}, "accepts": false},
+        {"event": {"type": "audio_start", "reply_id": "r1"}, "accepts": false},
+        {"event": {"type": "ready"}, "accepts": false},
+        {"event": {"type": "ended"}, "accepts": false}
+      ]
+    },
+    {
+      "name": "dispose closes a gate permanently without a server ending event",
+      "options": {},
+      "steps": [
+        {"event": {"type": "audio_start", "reply_id": "r1"}, "accepts": true},
+        {"action": "close", "accepts": false},
+        {"event": {"type": "interrupt", "question_id": "q2"}, "accepts": false},
+        {"event": {"type": "audio_start", "reply_id": "r2", "question_id": "q2"}, "accepts": false}
+      ]
+    }
+  ]
+}

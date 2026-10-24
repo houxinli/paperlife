@@ -1,8 +1,9 @@
+import {AudioGate} from './audio-gate.js';
 const BASE=typeof location==='undefined'?'':location.pathname?.split('/life')[0]||'';
 export class VoiceCall {
   constructor(onEvent){
-    this.onEvent=onEvent;this.sources=new Set();this.next=0;this.closed=false;this.suppressed=false;
-    this.cancelledReplies=new Set();this.cancelledQuestions=new Set();this.finishedReplies=new Set();
+    this.onEvent=onEvent;this.sources=new Set();this.next=0;this.closed=false;
+    this.gate=new AudioGate({allowLegacyAudio:true});
     this.diagnostics={receivedChunks:0,receivedBytes:0,scheduledChunks:0,suppressedChunks:0,audioStarts:0,staleStarts:0,resumeAttempts:0,resumeFailures:0};
   }
   async prepare(){
@@ -17,7 +18,7 @@ export class VoiceCall {
     this.input.connect(this.worklet);this.worklet.connect(this.mute);this.mute.connect(this.context.destination);
     this.worklet.port.onmessage=({data})=>{
       if(this.ready&&this.ws?.readyState===WebSocket.OPEN){
-        if(this.ws.bufferedAmount>128000){this.onEvent({type:'error',message:'网络上传跟不上，采访已暂停。请换稳定网络后继续。'});this.dispose();return;}
+        if(this.ws.bufferedAmount>128000){this.onEvent({type:'error',message:'网络上传跟不上，聊天已暂停。请换稳定网络后继续。'});this.dispose();return;}
         this.ws.send(data);
       }
     };
@@ -37,23 +38,20 @@ export class VoiceCall {
       if(this.closed)return;
       if(data instanceof ArrayBuffer){
         this.diagnostics.receivedChunks++;this.diagnostics.receivedBytes+=data.byteLength;
-        if(!this.stopping&&!this.suppressed)this.play(data);else this.diagnostics.suppressedChunks++;
+        if(!this.stopping&&this.gate.accepts())this.play(data);else this.diagnostics.suppressedChunks++;
         return;
       }
       const event=JSON.parse(data);
       if(event.type==='ready'){clearTimeout(this.timer);if(!this.stopping)this.ready=true;}
-      if(event.type==='interrupt'){this.stopAnswer();this.questionId=event.question_id||null;}
-      if(event.type==='audio_start')this.startAudio(event);
-      if(event.type==='answer_start'&&!this.staleReply(event)){
-        this.replyId=event.reply_id||null;
-        // 兼容尚未发出独立音频边界的旧服务器；文本流不能打开新版音频门。
-        if(!this.audioBoundariesSeen&&event.source!=='text')this.suppressed=false;
+      this.gate.event(event);
+      if(event.type==='interrupt'){this.interrupt();this.reportAudio('interrupt');}
+      if(event.type==='audio_start'){
+        this.diagnostics.audioStarts++;
+        if(this.gate.stale(event)||(event.reply_id&&this.gate.finished.has(event.reply_id)))this.diagnostics.staleStarts++;
+        if(this.gate.accepts())this.resumeBlocked=false;
+        this.reportAudio('audio_start');
       }
-      if(event.type==='audio_end'){
-        if(event.reply_id)this.finishedReplies.add(event.reply_id);
-        if((!event.reply_id||event.reply_id===this.audioReplyId)&&(!event.question_id||event.question_id===this.audioQuestionId))this.suppressed=true;
-        this.reportAudio('audio_end');
-      }
+      if(event.type==='audio_end')this.reportAudio('audio_end');
       if(event.type==='ending')this.beginEnding();
       if(event.type==='ended'){this.ended=true;this.dispose();}
       this.onEvent(event);
@@ -61,20 +59,8 @@ export class VoiceCall {
     this.ws.onerror=()=>this.onEvent({type:'error',message:'网络连接失败，请稍后重试。'});
     this.ws.onclose=()=>{this.dispose();if(!this.ended)this.onEvent({type:'disconnected'});};
   }
-  staleReply(event){
-    return (event.reply_id&&this.cancelledReplies.has(event.reply_id))||
-      (event.question_id&&(this.cancelledQuestions.has(event.question_id)||(this.questionId&&event.question_id!==this.questionId)));
-  }
-  startAudio(event){
-    this.audioBoundariesSeen=true;this.diagnostics.audioStarts++;
-    this.audioReplyId=event.reply_id||null;this.audioQuestionId=event.question_id||null;
-    this.suppressed=Boolean(this.staleReply(event)||(event.reply_id&&this.finishedReplies.has(event.reply_id)));
-    if(this.suppressed)this.diagnostics.staleStarts++;
-    else{this.replyId=event.reply_id||null;this.resumeBlocked=false;}
-    this.reportAudio('audio_start');
-  }
   reportAudio(reason){
-    this.onEvent({type:'audio_diagnostic',reason,...this.diagnostics,contextState:this.context?.state||'unavailable',queuedSources:this.sources.size,suppressed:this.suppressed});
+    this.onEvent({type:'audio_diagnostic',reason,...this.diagnostics,contextState:this.context?.state||'unavailable',queuedSources:this.sources.size,suppressed:!this.gate.accepts()});
   }
   async resumeAudio(){
     if(this.closed||this.stopping||!this.context||this.context.state==='closed')return false;
@@ -117,14 +103,11 @@ export class VoiceCall {
   }
   interrupt(){for(const source of this.sources){try{source.stop();}catch{}}this.sources.clear();this.next=0;}
   stopAnswer(){
-    if(this.replyId)this.cancelledReplies.add(this.replyId);
-    if(this.audioReplyId)this.cancelledReplies.add(this.audioReplyId);
-    if(this.audioQuestionId)this.cancelledQuestions.add(this.audioQuestionId);
-    this.suppressed=true;this.interrupt();this.reportAudio('interrupt');
+    this.gate.cancel();this.interrupt();this.reportAudio('interrupt');
   }
   beginEnding(){
     if(this.closed||this.stopping)return false;
-    this.stopping=true;this.ready=false;this.stream?.getTracks().forEach(t=>t.stop());this.interrupt();
+    this.stopping=true;this.ready=false;this.gate.close();this.stream?.getTracks().forEach(t=>t.stop());this.interrupt();
     this.stopTimer=setTimeout(()=>this.dispose(),8000);
     return true;
   }
@@ -134,7 +117,7 @@ export class VoiceCall {
     else this.dispose();
   }
   dispose(){
-    if(this.closed)return;this.closed=true;this.ready=false;clearTimeout(this.timer);clearTimeout(this.stopTimer);
+    if(this.closed)return;this.closed=true;this.ready=false;this.gate.close();clearTimeout(this.timer);clearTimeout(this.stopTimer);
     this.stream?.getTracks().forEach(t=>t.stop());this.interrupt();this.input?.disconnect();this.worklet?.disconnect();this.mute?.disconnect();
     if(this.context)this.context.onstatechange=null;
     this.reportAudio('closed');

@@ -1,28 +1,4 @@
-class AudioGate {
-  constructor(){this.open=false;this.closed=false;this.cancelledReplies=new Set();this.cancelledQuestions=new Set();this.finished=new Set();}
-  stale(e){return (e.reply_id&&this.cancelledReplies.has(e.reply_id))||(e.question_id&&(this.cancelledQuestions.has(e.question_id)||(this.questionId&&e.question_id!==this.questionId)));}
-  accepts(){return this.open&&!this.closed;}
-  event(e){
-    if(e.type==='interrupt'){
-      if(this.replyId)this.cancelledReplies.add(this.replyId);
-      if(this.audioReplyId)this.cancelledReplies.add(this.audioReplyId);
-      if(this.audioQuestionId)this.cancelledQuestions.add(this.audioQuestionId);
-      this.open=false;this.questionId=e.question_id||null;
-    }
-    if(e.type==='answer_start'&&!this.stale(e))this.replyId=e.reply_id||null;
-    if(e.type==='audio_start'){
-      this.audioReplyId=e.reply_id||null;this.audioQuestionId=e.question_id||null;
-      this.open=!this.closed&&!this.stale(e)&&!(e.reply_id&&this.finished.has(e.reply_id));
-      if(this.open)this.replyId=e.reply_id||null;
-    }
-    // sentence_end never closes the stream: a reply can contain several sentences.
-    if(e.type==='audio_end'){
-      if(e.reply_id)this.finished.add(e.reply_id);
-      if((!e.reply_id||e.reply_id===this.audioReplyId)&&(!e.question_id||e.question_id===this.audioQuestionId))this.open=false;
-    }
-    if(e.type==='ending'||e.type==='ended'){this.closed=true;this.open=false;}
-  }
-}
+const {AudioGate}=require('./audio-gate');
 class OrderedSender {
   constructor(socket,onError,options={}){this.socket=socket;this.onError=onError;this.maxBytes=options.maxBytes||128000;this.timeout=options.timeout||5000;this.queue=[];this.bytes=0;this.closed=false;this.active=null;}
   send(data){
@@ -44,6 +20,8 @@ class OrderedSender {
   close(){this.closed=true;clearTimeout(this.timer);this.queue=[];this.active=null;this.bytes=0;}
 }
 function updateTranscript(rows,event){
+  // 打断只冻结已经显示的助手原话；下一回答另起一行，不改动输入快照。
+  if(event.type==='interrupt')return rows.map(row=>row.role==='assistant'&&!row.final?{...row,final:true,interrupted:true}:row);
   if(!['user','assistant'].includes(event.role)||typeof event.text!=='string')return rows;
   const next=rows.slice();let at=-1;
   for(let i=next.length-1;i>=0;i--)if(next[i].role===event.role&&!next[i].final){at=i;break;}

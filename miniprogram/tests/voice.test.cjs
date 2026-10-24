@@ -27,7 +27,7 @@ test('ending stops actual microphone and prevents late PCM or audio from reopeni
 test('24k playback survives sentence boundaries, cancels on interrupt, rejects stale reply',async()=>{
   const f=fixture(),call=new VoiceCall(f.wx,()=>{});await call.prepare();call.connect('wss://fictional.example/api/life/live','fictional-ticket');f.socket.Open();
   const e=event=>f.socket.Message({data:JSON.stringify(event)}),pcm=()=>f.socket.Message({data:Uint8Array.from([0,128,0,64]).buffer});
-  e({type:'audio_start',reply_id:'r1',question_id:'q1'});pcm();e({type:'sentence_end'});pcm();
+  e({type:'audio_start',reply_id:'r1',question_id:'q1'});pcm();e({type:'audio_sentence_end'});pcm();
   assert.equal(f.sources.length,2);assert.equal(f.sources[0].buffer.rate,24000);assert.deepEqual([...f.sources[0].buffer.data],[-1,.5]);
   e({type:'interrupt',question_id:'q2'});assert.ok(f.sources.every(s=>s.stopped));
   e({type:'audio_start',reply_id:'r1',question_id:'q1'});pcm();assert.equal(f.sources.length,2);

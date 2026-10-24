@@ -1,7 +1,7 @@
 <view class="page">
   <view class="eyebrow">PAPERLIFE · 人生小记</view>
   <view class="heading">把一生，慢慢说给未来。</view>
-  <view class="muted">与 AI 采访者聊聊往事，留下自己的声音。</view>
+  <view class="muted">和 AI 聊聊今天的小事，留下自己的声音。</view>
   <view wx:if="{{error}}" class="error">{{error}}</view>
   <view wx:if="{{!configured}}" class="card">开发准备版尚未配置。请由开发者填写真实 AppID、服务地址及微信后台设置。</view>
   <block wx:if="{{configured}}">

@@ -25,12 +25,12 @@ export function createBook({api,profile,openSession,note}){
     if(layer==='sources'){
       root.append(el('p','这里保存导入原文、录音和原始转写。校对与润色另存，不会覆盖它们。','muted'));
       for(const s of sources)root.append(click(s.title,()=>showSource(s.title,s.text)));
-      for(const s of sessions)root.append(click('采访：'+s.title,()=>openSession(s.id)));
-      if(!sources.length&&!sessions.length)root.append(el('p','还没有原始资料，第一次采访会从空白开始。'));
+      for(const s of sessions)root.append(click('聊天：'+s.title,()=>openSession(s.id)));
+      if(!sources.length&&!sessions.length)root.append(el('p','还没有原始资料，第一次聊天会从空白开始。'));
       return;
     }
     const visible=items.filter(i=>layer==='review'?i.status==='draft':layer==='facts'?['fact','person','event'].includes(i.kind)&&i.status==='confirmed':layer==='story'?i.kind==='story'&&i.status==='confirmed':i.kind==='question'&&['open','resolved'].includes(i.status));
-    if(!visible.length)root.append(el('p',layer==='review'?'暂无待审核草稿。访谈结束后会自动整理，也可在历史采访中手动发起。':layer==='question'?'暂时没有待确认问题。AI提议的问题需在待审核区确认后进入这里。':'这里只展示你确认过的内容。请先到待审核区校对确认。','muted'));
+    if(!visible.length)root.append(el('p',layer==='review'?'暂无待审核草稿。聊天结束后会自动整理，也可在历史聊天中手动发起。':layer==='question'?'暂时没有待确认问题。AI提议的问题需在待审核区确认后进入这里。':'这里只展示你确认过的内容。请先到待审核区校对确认。','muted'));
     for(const i of visible){
       const card=el('article','','book-card');card.append(el('small',kinds[i.kind]+' · '+states[i.status]),el('h3',i.title));
       const meta=[i.time_text,i.people,i.place].filter(Boolean).join(' · ');if(meta)card.append(el('p',meta,'muted'));
@@ -73,7 +73,7 @@ export function createBook({api,profile,openSession,note}){
     $('processing-status').replaceChildren();
     for(const j of jobs.slice(0,8)){
       const state={pending:'排队／等待重试',running:'正在自动整理',completed:'草稿已生成',failed:'整理失败'}[j.status]||j.status;
-      const title=sessions.find(s=>s.id===j.session)?.title||'访谈';
+      const title=sessions.find(s=>s.id===j.session)?.title||'聊天';
       const row=el('div',`${title}：${state}${j.total?'（'+j.progress+'/'+j.total+'）':''}`);
       if(j.error&&j.status!=='completed')row.append(el('p',j.error,'muted'));
       if(j.status==='failed'&&profile().role!=='reader')row.append(click('重试',async()=>{await api('/life/sessions/'+j.session+'/process','POST',{});await load();}));

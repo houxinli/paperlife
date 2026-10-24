@@ -32,7 +32,7 @@ test('WAV adapter validates format and strips headers split across frames', () =
 test('audio boundaries reject cancelled and completed replies; sentence end leaves the gate open', () => {
   const gate=new AudioGate();assert.equal(gate.accepts(),false);
   gate.event({type:'audio_start',reply_id:'old',question_id:'q1'});assert.equal(gate.accepts(),true);
-  gate.event({type:'sentence_end',reply_id:'old'});assert.equal(gate.accepts(),true);
+  gate.event({type:'audio_sentence_end',reply_id:'old'});assert.equal(gate.accepts(),true);
   gate.event({type:'interrupt',question_id:'q2'});assert.equal(gate.accepts(),false);
   gate.event({type:'audio_start',reply_id:'old',question_id:'q1'});assert.equal(gate.accepts(),false);
   gate.event({type:'answer_start',reply_id:'new',question_id:'q2',source:'text'});assert.equal(gate.accepts(),false);
@@ -48,6 +48,16 @@ test('transcripts replace partial text, preserve final turns, and separate speak
   let rows=[];
   for(const event of [{role:'user',text:'虚构',final:false},{role:'assistant',text:'您说',final:false},{role:'user',text:'虚构故事。',final:true},{role:'user',text:'第二段',final:false}]) rows=updateTranscript(rows,event);
   assert.deepEqual(rows.map(r=>[r.role,r.text,r.final]),[['user','虚构故事。',true],['assistant','您说',false],['user','第二段',false]]);
+});
+test('interrupt preserves unfinished assistant text and the next answer gets a new row', () => {
+  const before=updateTranscript([], {type:'transcript',role:'assistant',text:'虚构的前半句',final:false});
+  const interrupted=updateTranscript(before, {type:'interrupt',question_id:'q2'});
+  const next=updateTranscript(interrupted, {type:'transcript',role:'assistant',text:'我们接着聊',final:false});
+  assert.equal(before[0].final,false,'the previously rendered snapshot is not mutated');
+  assert.deepEqual(next.map(row=>[row.text,row.final,row.interrupted||false]), [
+    ['虚构的前半句',true,true],['我们接着聊',false,false]
+  ]);
+  assert.notEqual(next[0].id,next[1].id);
 });
 test('socket writes stay ordered and cancellation removes pending audio', () => {
   const sent=[], pending=[], errors=[];
