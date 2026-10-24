@@ -1,0 +1,17 @@
+{
+  "synthetic_only": true,
+  "user_turns": 2,
+  "returned_audio_bytes": 672424,
+  "microphone_stopped": true,
+  "ending_reasons": [
+    "narrator_request"
+  ],
+  "status": "ended",
+  "preference_keys": [
+    "interviewer_name",
+    "narrator_name"
+  ],
+  "naming_prompt_consumed": true,
+  "processing_enqueued": 1,
+  "validation_stage": "after_review_fixes"
+}

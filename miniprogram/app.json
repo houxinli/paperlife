@@ -1,0 +1,8 @@
+{
+  "pages": ["pages/index/index"],
+  "window": { "navigationBarTitleText": "人生小记", "navigationBarBackgroundColor": "#f7f4ed", "navigationBarTextStyle": "black", "backgroundColor": "#f7f4ed" },
+  "permission": { "scope.record": { "desc": "与 AI 采访者语音聊天，保存原声和原始转写供本人及获授权家人回看" } },
+  "__usePrivacyCheck__": true,
+  "style": "v2",
+  "sitemapLocation": "sitemap.json"
+}

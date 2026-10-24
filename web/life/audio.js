@@ -41,7 +41,7 @@ export class VoiceCall {
         return;
       }
       const event=JSON.parse(data);
-      if(event.type==='ready'){clearTimeout(this.timer);this.ready=true;}
+      if(event.type==='ready'){clearTimeout(this.timer);if(!this.stopping)this.ready=true;}
       if(event.type==='interrupt'){this.stopAnswer();this.questionId=event.question_id||null;}
       if(event.type==='audio_start')this.startAudio(event);
       if(event.type==='answer_start'&&!this.staleReply(event)){
@@ -54,6 +54,7 @@ export class VoiceCall {
         if((!event.reply_id||event.reply_id===this.audioReplyId)&&(!event.question_id||event.question_id===this.audioQuestionId))this.suppressed=true;
         this.reportAudio('audio_end');
       }
+      if(event.type==='ending')this.beginEnding();
       if(event.type==='ended'){this.ended=true;this.dispose();}
       this.onEvent(event);
     };
@@ -121,9 +122,15 @@ export class VoiceCall {
     if(this.audioQuestionId)this.cancelledQuestions.add(this.audioQuestionId);
     this.suppressed=true;this.interrupt();this.reportAudio('interrupt');
   }
-  stop(){
+  beginEnding(){
+    if(this.closed||this.stopping)return false;
     this.stopping=true;this.ready=false;this.stream?.getTracks().forEach(t=>t.stop());this.interrupt();
-    if(this.ws?.readyState===WebSocket.OPEN){this.ws.send(JSON.stringify({type:'stop'}));this.stopTimer=setTimeout(()=>this.dispose(),8000);}
+    this.stopTimer=setTimeout(()=>this.dispose(),8000);
+    return true;
+  }
+  stop(){
+    if(!this.beginEnding())return;
+    if(this.ws?.readyState===WebSocket.OPEN)this.ws.send(JSON.stringify({type:'stop'}));
     else this.dispose();
   }
   dispose(){

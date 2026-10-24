@@ -1,0 +1,86 @@
+<view class="page">
+  <view class="eyebrow">PAPERLIFE · 人生小记</view>
+  <view class="heading">把一生，慢慢说给未来。</view>
+  <view class="muted">与 AI 采访者聊聊往事，留下自己的声音。</view>
+  <view wx:if="{{error}}" class="error">{{error}}</view>
+  <view wx:if="{{!configured}}" class="card">开发准备版尚未配置。请由开发者填写真实 AppID、服务地址及微信后台设置。</view>
+  <block wx:if="{{configured}}">
+    <view class="row account-actions">
+      <button wx:if="{{scope === 'guest'}}" class="small" disabled="{{active || busy}}" bindtap="useAccount">我的微信账号</button>
+      <button wx:if="{{hasInvite && scope !== 'guest'}}" class="small" disabled="{{active || busy}}" bindtap="useInvite">打开专属邀请</button>
+      <button wx:if="{{scope === 'guest'}}" class="small" disabled="{{active || busy}}" bindtap="forgetInvite">清除本机邀请</button>
+      <button wx:if="{{loggedIn && scope === 'account'}}" class="small" disabled="{{active || busy}}" bindtap="logout">退出账号</button>
+    </view>
+    <view wx:if="{{scope === 'account' && !loggedIn}}" class="card">
+      <view class="title">从自己的故事开始</view>
+      <view class="muted">微信登录后，可创建自己的空白档案，或查看已获授权的档案。无需提供手机号。</view>
+      <button class="primary" loading="{{busy}}" disabled="{{busy}}" bindtap="login">微信登录</button>
+    </view>
+    <view wx:if="{{scope === 'account' && loggedIn}}" class="card">
+      <view class="title">我的档案</view>
+      <button wx:for="{{profiles}}" wx:key="id" data-id="{{item.id}}" disabled="{{active || busy}}" bindtap="chooseProfile" class="small">{{item.name}}{{profile.id === item.id ? ' · 当前' : ''}}</button>
+      <view class="muted">{{profiles.length ? '也可以为自己新建一份空白档案。' : '还没有档案。先为自己留一页空白。'}}</view>
+      <input value="{{profileName}}" maxlength="80" placeholder="本人新档案名称（可留空）" bindinput="onNameInput" disabled="{{active}}" />
+      <button class="primary" disabled="{{busy || active}}" bindtap="createProfile">创建本人的空白档案</button>
+    </view>
+    <block wx:if="{{profile}}">
+      <view class="profile-name">{{narratorName}}的人生小记</view>
+      <view wx:if="{{scope === 'guest'}}" class="muted">正在使用家人发来的专属邀请，可聊天、读历史和已确认的书籍。</view>
+      <view class="tabs row">
+        <button class="small {{tab === 'chat' ? 'primary' : ''}}" data-tab="chat" bindtap="setTab">聊一会儿</button>
+        <button class="small {{tab === 'history' ? 'primary' : ''}}" data-tab="history" bindtap="setTab">过去的聊天</button>
+        <button class="small {{tab === 'book' ? 'primary' : ''}}" data-tab="book" bindtap="setTab">人生之书</button>
+      </view>
+      <view class="call-bar card">
+        <view>{{callState}}</view>
+        <button wx:if="{{!active}}" class="primary" disabled="{{!canTalk || busy}}" loading="{{busy}}" bindtap="start">和{{interviewerName}}聊一会儿</button>
+        <button wx:else class="stop" bindtap="stop">结束并保存</button>
+        <button wx:if="{{audioBlocked}}" class="small" bindtap="resumeAudio">恢复声音</button>
+        <view wx:if="{{!canTalk}}" class="muted">当前档案只读，或语音服务尚未配置。</view>
+        <view class="muted">前台语音聊天，每次最长约十分钟；离开小程序会停止录音。阅读下方内容不会关闭麦克风。</view>
+      </view>
+      <view hidden="{{tab !== 'chat'}}">
+        <view class="row"><view class="title">这次聊天</view><button class="small" bindtap="toggleTranscript">{{expanded ? '收起对话' : '展开对话'}}</button></view>
+        <view wx:if="{{!rows.length}}" class="empty">想到哪里，就从哪里开始。</view>
+        <view wx:if="{{!expanded && rows.length}}" class="card body">{{currentText}}</view>
+        <view wx:if="{{expanded}}" class="conversation">
+          <view wx:for="{{rows}}" wx:key="id" class="message {{item.role}}">
+            <view class="muted">{{item.role === 'user' ? narratorName : interviewerName + ' · AI'}}</view>
+            <text selectable class="body">{{item.text}}</text>
+            <view wx:if="{{!item.final}}" class="muted">正在转写…</view>
+          </view>
+        </view>
+      </view>
+      <view hidden="{{tab !== 'history'}}">
+        <view class="row"><view class="title">过去的聊天</view><button class="small" disabled="{{busy}}" bindtap="refreshReading">刷新</button></view>
+        <view wx:if="{{!history.length}}" class="empty">第一次聊天之后，原声和文字会留在这里。</view>
+        <button wx:for="{{history}}" wx:key="id" class="history-item" data-id="{{item.id}}" bindtap="openHistory"><view>{{item.title}}</view><view class="muted">{{item.created_at}} UTC · {{item.status === 'ended' ? '已保存' : '进行中或处理中'}}</view></button>
+        <button wx:if="{{hasMore}}" class="small" loading="{{historyBusy}}" disabled="{{historyBusy}}" bindtap="moreHistory">更早的聊天</button>
+        <view wx:if="{{detail}}" class="card">
+          <view class="title">{{detail.title}}</view><button class="small" bindtap="closeHistory">收起这段历史</button>
+          <view class="row"><button class="small" data-track="user" bindtap="playHistory" disabled="{{active || busy}}">回听我的原声</button><button class="small" data-track="assistant" bindtap="playHistory" disabled="{{active || busy}}">回听 AI 提问</button></view>
+          <button wx:if="{{playing}}" class="small" bindtap="stopPlayback">停止回听</button>
+          <view wx:if="{{active}}" class="muted">聊天时可阅读，结束后可回听原声。</view>
+          <view wx:for="{{detail.turns}}" wx:key="id" class="message {{item.role}}"><view class="muted">{{item.role === 'user' ? narratorName : interviewerName + ' · AI'}}</view><text selectable class="body">{{item.text}}</text></view>
+        </view>
+      </view>
+      <view hidden="{{tab !== 'book'}}">
+        <view class="row"><view class="title">人生之书</view><button class="small" disabled="{{busy}}" bindtap="refreshReading">刷新</button></view>
+        <view class="muted">这里展示人工确认后的整理内容。{{pendingCount ? '还有 ' + pendingCount + ' 项等待校对确认。' : ''}}</view>
+        <view wx:if="{{!book.length}}" class="empty">确认后的故事，会一页一页积累在这里。</view>
+        <view wx:for="{{book}}" wx:key="id" class="card">
+          <view class="title">{{item.title}}</view><view class="muted">{{item.time_text}} {{item.place}}</view><text selectable class="body">{{item.body}}</text>
+          <view wx:for="{{item.evidence}}" wx:for-item="evidence" wx:key="turn_id" class="evidence"><text selectable>原始转写：{{evidence.quote}}</text><button class="small" data-id="{{evidence.session_id}}" bindtap="openHistory">查看来源对话</button></view>
+        </view>
+      </view>
+    </block>
+    <view class="footer row"><button class="small" bindtap="openPrivacy">隐私保护指引</button><button class="small" bindtap="openSettings">麦克风授权设置</button></view>
+  </block>
+</view>
+<view wx:if="{{privacyPrompt}}" class="overlay"><view class="privacy card">
+  <view class="title">请先阅读隐私保护指引</view>
+  <view>语音聊天会使用麦克风，并将声音发送到服务端，保存原声及转写。您可以拒绝，继续阅读已获授权的内容。</view>
+  <button class="small" bindtap="openPrivacy">阅读完整指引</button>
+  <button id="privacy-agree" class="primary" open-type="agreePrivacyAuthorization" bindagreeprivacyauthorization="privacyAgree">我已阅读并同意</button>
+  <button class="small" bindtap="privacyDecline">暂不同意</button>
+</view></view>

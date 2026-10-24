@@ -32,6 +32,7 @@ class ProviderInput(BaseModel):
 
 class TopicInput(BaseModel):
     topic: str = Field(default='从称呼和小时候住的地方慢慢聊起', min_length=1, max_length=200)
+    transport: Literal['web','wechat'] = 'web'
 
 
 class EditInput(BaseModel):
@@ -49,6 +50,11 @@ def build_router(database_path: Path, current_user, account_authorized=None):
     store = Store(Path(database_path).parent / 'life')
     tickets = {}
     active = set()
+
+    def display_names(p):
+        values={entry['key']:entry['value'] for entry in store.preferences(p['id'])}
+        return {'interviewer_name':values.get('interviewer_name','拾光'),
+                'narrator_name':values.get('narrator_name',p['name'])}
 
     def profile_access(ident, user, edit=False, owner=False):
         p = store.profile(ident, user.id)
@@ -94,7 +100,8 @@ def build_router(database_path: Path, current_user, account_authorized=None):
 
     @router.get('/profiles/{ident}')
     def get_profile(ident: str, user=Depends(current_user)):
-        return profile_access(ident, user)
+        p=profile_access(ident,user)
+        return {**p,**display_names(p)}
 
     @router.put('/profiles/{ident}')
     def update_profile(ident: str, data: ProfileInput, user=Depends(current_user)):
@@ -150,7 +157,7 @@ def build_router(database_path: Path, current_user, account_authorized=None):
             raise HTTPException(404,'这条聊天习惯不存在或已撤销')
         return {'ok':True}
 
-    def issue_ticket(ident, uid, topic, link_id=None, auth_digest=None):
+    def issue_ticket(ident, uid, topic, link_id=None, auth_digest=None, transport='web'):
         if not configured():
             raise HTTPException(503, '请管理员先配置豆包实时语音服务')
         for token, entry in list(tickets.items()):
@@ -160,7 +167,7 @@ def build_router(database_path: Path, current_user, account_authorized=None):
             raise HTTPException(409, '已有采访正在连接或进行中，请结束或等候一分钟')
         session = store.create_session(ident,uid,topic)
         ticket = secrets.token_urlsafe(32)
-        tickets[ticket] = {'user':uid,'session':session['id'],'link_id':link_id,'auth_digest':auth_digest,'expires':time.monotonic()+60}
+        tickets[ticket] = {'user':uid,'session':session['id'],'link_id':link_id,'auth_digest':auth_digest,'transport':transport,'expires':time.monotonic()+60}
         return {**session,'ticket':ticket}
 
     @router.post('/profiles/{ident}/sessions')
@@ -168,7 +175,7 @@ def build_router(database_path: Path, current_user, account_authorized=None):
         profile_access(ident,user,edit=True)
         header=request.headers.get('authorization','')
         token=header[7:] if header.startswith('Bearer ') else request.cookies.get('paperlife_session','')
-        return issue_ticket(ident,user.id,data.topic,auth_digest=hashlib.sha256(token.encode()).hexdigest())
+        return issue_ticket(ident,user.id,data.topic,auth_digest=hashlib.sha256(token.encode()).hexdigest(),transport=data.transport)
 
     def guest_access(x_life_link: str = Header(default='')):
         link=store.link(token=x_life_link) if len(x_life_link)<=200 else None
@@ -179,7 +186,7 @@ def build_router(database_path: Path, current_user, account_authorized=None):
     @router.get('/guest')
     def guest(link=Depends(guest_access)):
         p=link['profile_data']
-        return {'id':p['id'],'name':p['name'],'role':'narrator','configured':configured()}
+        return {'id':p['id'],'name':p['name'],'role':'narrator','configured':configured(),**display_names(p)}
 
     @router.get('/guest/preferences')
     def guest_preferences(link=Depends(guest_access)):
@@ -197,7 +204,7 @@ def build_router(database_path: Path, current_user, account_authorized=None):
         with store.db() as db:
             count=db.execute("SELECT count(*) FROM sessions WHERE user=? AND created_at>datetime('now','-1 day')",(uid,)).fetchone()[0]
         if count>=20:raise HTTPException(429,'今天已聊了很多次，请明天继续，或联系家人')
-        return issue_ticket(link['profile'],uid,data.topic,link['id'])
+        return issue_ticket(link['profile'],uid,data.topic,link['id'],transport=data.transport)
 
     @router.get('/sessions/{ident}')
     def session(ident: str, user=Depends(current_user)):
@@ -236,7 +243,9 @@ def build_router(database_path: Path, current_user, account_authorized=None):
     @router.websocket('/live')
     async def live(ws: WebSocket):
         origin = ws.headers.get('origin')
-        if not origin or urlparse(origin).netloc != ws.headers.get('host'):
+        same_origin = bool(origin and urlparse(origin).netloc == ws.headers.get('host'))
+        native_origin = not origin or origin == 'https://servicewechat.com'
+        if not same_origin and not native_origin:
             await ws.close(code=1008)
             return
         await ws.accept()
@@ -249,6 +258,10 @@ def build_router(database_path: Path, current_user, account_authorized=None):
             ticket = tickets.pop(json.loads(first).get('ticket',''),None)
             if not ticket or ticket['expires']<time.monotonic():
                 raise ValueError('Expired ticket')
+            # 原生客户端没有浏览器同源环境；授权仍由服务器签发的一次性票据决定。
+            # transport只来自已鉴权的REST签发步骤，不相信WS首包的自报标记。
+            if not same_origin and ticket.get('transport') != 'wechat':
+                raise ValueError('Origin denied')
             uid = ticket['user']
             s = store.session(ticket['session'])
             link_id=ticket.get('link_id')
@@ -282,4 +295,6 @@ def build_router(database_path: Path, current_user, account_authorized=None):
 
     from .content import install_content
     install_content(router,store,current_user,profile_access)
+    from .narrator import install_narrator
+    install_narrator(router,store,current_user,profile_access,guest_access)
     return router
