@@ -1,6 +1,7 @@
 """实时音频代理；持久化与授权由应用控制，不把密钥发给浏览器。"""
 import asyncio
 import json
+import logging
 import time
 import uuid
 import wave
@@ -8,10 +9,11 @@ from contextlib import suppress
 
 from websockets.asyncio.client import connect
 
-from .prompt import session_config
+from .prompt import session_config, opening_instruction
 from .protocol import decode, encode
 
 URL = 'wss://openspeech.bytedance.com/api/v3/realtime/dialogue'
+logger = logging.getLogger(__name__)
 
 
 async def interview(client, store, session, profile, authorize=None):
@@ -27,16 +29,22 @@ async def interview(client, store, session, profile, authorize=None):
     pending = {'user':'','assistant':''}
     turn_start = {'user':0.0,'assistant':0.0}
     user_bytes = 0
-    def save(role):
+    diagnostics = {'provider_events':{}, 'audio_chunks':0, 'audio_bytes':0, 'forwarded_audio_chunks':0}
+    def save(role, confirmed=False):
+        changes=[]
         if pending[role]:
             turn_id=store.add_turn(sid,role,pending[role],turn_start[role])
-            if role=='user':store.record_quality(sid,turn_id,pending[role],turn_start[role])
+            # 断线时仍抢救临时原文，但临时识别不能变成长期采访指令。
+            if role=='user' and confirmed:
+                store.record_quality(sid,turn_id,pending[role],turn_start[role])
+                changes=store.record_preferences(sid,turn_id,pending[role])
             pending[role] = ''
+        return changes
     with store.db() as db:
         previous = db.execute('SELECT id,edited_text FROM sessions WHERE profile=? AND id!=? ORDER BY created_at DESC LIMIT 1', (profile['id'],sid)).fetchone()
     with store.db() as db:
         resolved=[dict(r) for r in db.execute("SELECT title,answer FROM items WHERE profile=? AND kind='question' AND status='resolved' AND answer!='' ORDER BY created_at DESC LIMIT 15",(profile['id'],))]
-    profile={**profile,'context':profile['context']+'\n家人已回答的问题（补充来源，仍可向讲述者核对）：\n'+'\n'.join(r['title']+'：'+r['answer'] for r in resolved)}
+    profile={**profile,'_interview_preferences':store.preferences(profile['id']),'context':profile['context']+'\n家人已回答的问题（补充来源，仍可向讲述者核对）：\n'+'\n'.join(r['title']+'：'+r['answer'] for r in resolved)}
     recent = ''
     if previous:
         recent = previous['edited_text'] or '\n'.join(t['role']+': '+t['text'] for t in store.turns(previous['id']))[-3000:]
@@ -56,7 +64,7 @@ async def interview(client, store, session, profile, authorize=None):
                 mic.setparams((1,2,16000,0,'NONE','not compressed'))
                 voice.setparams((1,2,24000,0,'NONE','not compressed'))
                 await client.send_json({'type':'ready','session':sid})
-                await upstream.send(encode(501,{'content':'请开始这次采访，简短问候并围绕本次话题只问一个问题。'},sid))
+                await upstream.send(encode(501,{'content':opening_instruction(profile,recent)},sid))
 
                 async def receive_client():
                     nonlocal user_bytes,status
@@ -90,26 +98,34 @@ async def interview(client, store, session, profile, authorize=None):
                     async for raw in upstream:
                         response = decode(raw)
                         event,data = response['event'],response['data']
+                        counts=diagnostics['provider_events']
+                        counts[str(event)]=counts.get(str(event),0)+1
                         elapsed = user_bytes/32000
                         if event in (51,153,599):
                             raise ValueError('Provider session failure')
                         if event == 450:
                             save('assistant')
                             turn_start['user'] = elapsed
-                            await client.send_json({'type':'interrupt'})
+                            await client.send_json({'type':'interrupt','question_id':data.get('question_id')})
                         elif event == 451:
                             for result in data.get('results',[]):
                                 pending['user'] = result.get('text','')
                                 await client.send_json({'type':'transcript','role':'user','text':pending['user'],'final':not result.get('is_interim',True)})
                                 if not result.get('is_interim',True):
-                                    save('user')
+                                    if save('user',confirmed=True):
+                                        await client.send_json({'type':'preference_saved'})
                         elif event == 459:
-                            save('user')
+                            if save('user',confirmed=True):
+                                await client.send_json({'type':'preference_saved'})
                             input_finished=time.monotonic()
+                        elif event in (350,351,359):
+                            # 音频和文本为独立流；用 TTS 边界控制播放，不依赖 550 到达顺序。
+                            await client.send_json({'type':{350:'audio_start',351:'audio_sentence_end',359:'audio_end'}[event],
+                                                    'reply_id':data.get('reply_id'),'question_id':data.get('question_id')})
                         elif event == 550:
                             reply = data.get('reply_id')
                             if reply != last_reply or not pending['assistant']:
-                                await client.send_json({'type':'answer_start','reply_id':reply})
+                                await client.send_json({'type':'answer_start','source':'text','reply_id':reply,'question_id':data.get('question_id')})
                                 last_reply = reply
                             text = data.get('content','')
                             if not pending['assistant']:
@@ -120,10 +136,13 @@ async def interview(client, store, session, profile, authorize=None):
                             await client.send_json({'type':'transcript','role':'assistant','text':pending['assistant'],'final':True})
                             save('assistant')
                         elif event == 352 and isinstance(data,bytes):
+                            diagnostics['audio_chunks']+=1
+                            diagnostics['audio_bytes']+=len(data)
                             if input_finished is not None:
                                 store.metric(sid,'response_first_audio_ms',(time.monotonic()-input_finished)*1000);input_finished=None
                             voice.writeframes(data)
                             await client.send_bytes(data)
+                            diagnostics['forwarded_audio_chunks']+=1
                         elif event == 152:
                             return
 
@@ -156,13 +175,17 @@ async def interview(client, store, session, profile, authorize=None):
                         if status != 'ended':
                             await upstream.send(encode(102,{},sid))
                         await upstream.send(encode(2,{}))
-    except Exception:
+    except Exception as error:
+        diagnostics['failure_type']=type(error).__name__
         await client.send_json({'type':'error','message':'实时语音连接失败或中断。请检查豆包服务是否开通、凭据及余额；已接收的录音保留在历史采访中。'})
     finally:
+        # 仅记录协议计数和错误类别，不记录凭据、素材、转写或供应商错误原文。
+        logger.info('voice_transport %s',json.dumps(diagnostics,sort_keys=True))
         save('user')
         save('assistant')
         store.finish_session(sid,status)
         from .processing import enqueue
         enqueue(store,sid)
         with suppress(Exception):
+            await client.send_json({'type':'voice_diagnostic',**diagnostics})
             await client.send_json({'type':'ended','session':sid,'status':status})

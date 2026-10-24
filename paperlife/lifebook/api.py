@@ -31,7 +31,7 @@ class ProviderInput(BaseModel):
 
 
 class TopicInput(BaseModel):
-    topic: str = Field(default='第一次去县城住校', min_length=1, max_length=200)
+    topic: str = Field(default='从称呼和小时候住的地方慢慢聊起', min_length=1, max_length=200)
 
 
 class EditInput(BaseModel):
@@ -138,6 +138,18 @@ def build_router(database_path: Path, current_user, account_authorized=None):
         with store.db() as db:
             return [dict(r) for r in db.execute('SELECT id,title,status,created_at,version FROM sessions WHERE profile=? ORDER BY created_at DESC', (ident,))]
 
+    @router.get('/profiles/{ident}/preferences')
+    def preferences(ident: str, user=Depends(current_user)):
+        profile_access(ident,user)
+        return store.preferences(ident)
+
+    @router.delete('/profiles/{ident}/preferences/{preference}')
+    def revoke_preference(ident: str, preference: str, user=Depends(current_user)):
+        profile_access(ident,user,edit=True)
+        if not store.revoke_preference(ident,preference):
+            raise HTTPException(404,'这条聊天习惯不存在或已撤销')
+        return {'ok':True}
+
     def issue_ticket(ident, uid, topic, link_id=None, auth_digest=None):
         if not configured():
             raise HTTPException(503, '请管理员先配置豆包实时语音服务')
@@ -168,6 +180,16 @@ def build_router(database_path: Path, current_user, account_authorized=None):
     def guest(link=Depends(guest_access)):
         p=link['profile_data']
         return {'id':p['id'],'name':p['name'],'role':'narrator','configured':configured()}
+
+    @router.get('/guest/preferences')
+    def guest_preferences(link=Depends(guest_access)):
+        return store.preferences(link['profile'])
+
+    @router.delete('/guest/preferences/{preference}')
+    def guest_revoke_preference(preference: str, link=Depends(guest_access)):
+        if not store.revoke_preference(link['profile'],preference):
+            raise HTTPException(404,'这条聊天习惯不存在或已撤销')
+        return {'ok':True}
 
     @router.post('/guest/sessions')
     def guest_start(data:TopicInput,link=Depends(guest_access)):
