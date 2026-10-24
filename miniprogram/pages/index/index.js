@@ -84,6 +84,13 @@ Page({
     if(epoch===this.epoch)this.setData({book:(result.items||[]).filter(i=>i.status==='confirmed'),pendingCount:result.pending_count||0});
   },
   refreshReading(){this.run(()=>Promise.all([this.loadHistory(true),this.loadBook()]));},
+  async refreshNames(){
+    if(!this.data.profile)return;const epoch=this.epoch,scope=this.data.scope,id=this.data.profile.id;
+    const updated=await this.api.request(scope==='guest'?'/life/guest':'/life/profiles/'+encodeURIComponent(id),'GET',null,scope);
+    if(epoch!==this.epoch||scope!==this.data.scope||!this.data.profile||this.data.profile.id!==id)return;
+    this.setData({profile:{...this.data.profile,interviewer_name:updated.interviewer_name,narrator_name:updated.narrator_name},
+      narratorName:updated.narrator_name||this.data.profile.name,interviewerName:updated.interviewer_name||'拾光'});
+  },
   openHistory(e){this.openSession(e.currentTarget.dataset.id);},
   openSession(id){this.run(async()=>{const epoch=this.epoch;this.stopPlayback();const detail=await this.api.request(this.api.detail(id,this.data.scope),'GET',null,this.data.scope);if(epoch===this.epoch)this.setData({detail,tab:'history'});});},
   closeHistory(){this.stopPlayback();this.setData({detail:null});},
@@ -110,6 +117,7 @@ Page({
   stop(){if(this.app.call)this.app.call.stop();},
   resumeAudio(){this.run(async()=>{if(this.app.call)await this.app.call.resumeAudio();});},
   onVoiceEvent(event){
+    if(event.type==='preference_saved')this.refreshNames().catch(e=>this.setData({error:e.message}));
     if(event.type==='recording')this.setData({callState:'正在听您说 · 麦克风已打开'});
     if(event.type==='audio_start')this.setData({callState:this.data.interviewerName+'在说话 · 您也可以开口'});
     if(event.type==='interrupt')this.setData({callState:'正在听您说'});
@@ -123,7 +131,7 @@ Page({
     if(event.type==='ended'||event.type==='disconnected'){
       this.app.call=null;this.setData({active:false,audioBlocked:false,callState:event.type==='ended'&&event.status==='ended'?'这次聊天已保存，下次接着聊':'连接已结束；已收到的内容会保留'});
       if(this.applyPendingInvite()){this.seenEntry=this.app.entryVersion;this.refresh().catch(e=>this.setData({error:e.message}));return;}
-      Promise.all([this.loadHistory(true),this.loadBook()]).catch(e=>this.setData({error:e.message}));
+      Promise.all([this.loadHistory(true),this.loadBook(),this.refreshNames()]).catch(e=>this.setData({error:e.message}));
     }
   },
   privacyAgree(){const resolve=this.privacyResolve;this.privacyResolve=null;this.setData({privacyPrompt:false});if(resolve)resolve({event:'agree',buttonId:'privacy-agree'});},

@@ -114,6 +114,8 @@ async def interview(client, store, session, profile, authorize=None):
                     last_reply = None
                     input_finished=None
                     latest_user_text=''
+                    latest_user_final=False
+                    pending_provider_exit=False
                     current_question=None
                     async def emit(event):
                         try:
@@ -131,6 +133,8 @@ async def interview(client, store, session, profile, authorize=None):
                             raise ValueError('Provider session failure')
                         if event == 450:
                             latest_user_text=''
+                            latest_user_final=False
+                            pending_provider_exit=False
                             current_question=data.get('question_id')
                             save('assistant')
                             turn_start['user'] = elapsed
@@ -139,9 +143,11 @@ async def interview(client, store, session, profile, authorize=None):
                             for result in data.get('results',[]):
                                 pending['user'] = result.get('text','')
                                 latest_user_text=pending['user']
+                                latest_user_final=not result.get('is_interim',True)
                                 changes=[]
                                 if not result.get('is_interim',True):
-                                    stop_requested=requests_exit(pending['user'])
+                                    stop_requested=(requests_exit(pending['user']) or
+                                                    (pending_provider_exit and bool(latest_user_text.strip()) and not exit_is_vetoed(latest_user_text)))
                                     changes=save('user',confirmed=True)
                                     if stop_requested:
                                         await request_end('narrator_request')
@@ -155,9 +161,10 @@ async def interview(client, store, session, profile, authorize=None):
                         elif event in (350,351,359):
                             # 音频和文本为独立流；用 TTS 边界控制播放，不依赖 550 到达顺序。
                             if (event == 359 and str(data.get('status_code')) == '20000002'
-                                    and not exit_is_vetoed(latest_user_text)
                                     and (not current_question or not data.get('question_id') or data['question_id']==current_question)):
-                                await request_end('narrator_request')
+                                pending_provider_exit=True
+                                if latest_user_final and latest_user_text.strip() and not exit_is_vetoed(latest_user_text):
+                                    await request_end('narrator_request')
                             await emit({'type':{350:'audio_start',351:'audio_sentence_end',359:'audio_end'}[event],
                                         'reply_id':data.get('reply_id'),'question_id':data.get('question_id')})
                         elif event == 550:

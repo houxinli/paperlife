@@ -33,3 +33,10 @@ test('account selection reads display names from the authorized profile detail',
   await page.select({id:'fictional-person',name:'虚构讲述者',role:'owner'},true);
   assert.equal(page.data.narratorName,'虚构小名');assert.equal(page.data.interviewerName,'小光');
 });
+test('spoken name preference refreshes current names without restarting or switching scope',async()=>{
+  const {page,app}=pageFixture();page.data.profile={id:'fictional-a',name:'虚构讲述者'};page.data.scope='guest';page.data.active=true;
+  let stopped=0;app.call={stop(){stopped++;}};
+  page.api.request=async(path,method,data,scope)=>{assert.equal(path,'/life/guest');assert.equal(scope,'guest');return {id:'fictional-a',name:'虚构讲述者',narrator_name:'林奶奶',interviewer_name:'小禾'};};
+  page.onVoiceEvent({type:'preference_saved'});await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(page.data.interviewerName,'小禾');assert.equal(page.data.narratorName,'林奶奶');assert.equal(stopped,0);assert.equal(page.data.active,true);
+});

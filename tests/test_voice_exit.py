@@ -119,6 +119,42 @@ class VoiceExitTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(text=text):
                 self.assertFalse(requests_exit(text))
 
+    def test_quitting_is_not_confused_with_negated_stopping_or_cross_clause_words(self):
+        from paperlife.lifebook.preferences import requests_exit,exit_is_vetoed
+        for text in ['我不想继续聊了','不要再问了，结束采访','不用问了，今天就到这里吧']:
+            with self.subTest(text=text):
+                self.assertTrue(requests_exit(text));self.assertFalse(exit_is_vetoed(text))
+        for text in ['不要结束采访，我们继续聊','结束采访，不对，继续聊吧','换个话题吧']:
+            with self.subTest(text=text):
+                self.assertFalse(requests_exit(text));self.assertTrue(exit_is_vetoed(text))
+
+    async def test_provider_exit_waits_for_final_transcript(self):
+        _,client=await self.run_stream([
+            (450,{'question_id':'q1'}),
+            (451,{'results':[{'text':'结束采访','is_interim':True}]}),
+            (359,{'question_id':'q1','status_code':'20000002'}),
+        ])
+        self.assertFalse(any(e.get('type')=='ending' for e in client.messages if isinstance(e,dict)))
+
+    async def test_early_provider_exit_is_vetoed_by_final_correction(self):
+        _,client=await self.run_stream([
+            (450,{'question_id':'q1'}),
+            (451,{'results':[{'text':'结束采访','is_interim':True}]}),
+            (359,{'question_id':'q1','status_code':'20000002'}),
+            (451,{'results':[{'text':'不要结束采访，我们继续聊。','is_interim':False}]}),
+        ])
+        self.assertFalse(any(e.get('type')=='ending' for e in client.messages if isinstance(e,dict)))
+
+    async def test_early_provider_exit_is_honored_after_nonlexical_final(self):
+        _,client=await self.run_stream([
+            (450,{'question_id':'q1'}),
+            (451,{'results':[{'text':'我该去','is_interim':True}]}),
+            (359,{'question_id':'q1','status_code':'20000002'}),
+            (451,{'results':[{'text':'我该去做饭喽','is_interim':False}]}),
+        ],drains=True)
+        self.assertEqual(self.store.session(self.session['id'])['status'],'ended')
+        self.assertEqual(sum(e.get('type')=='ending' for e in client.messages if isinstance(e,dict)),1)
+
     async def test_button_and_final_voice_stop_share_one_finish_and_archive_late_final(self):
         class StopClient(RecordingClient):
             def __init__(self):

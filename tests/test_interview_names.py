@@ -24,6 +24,12 @@ class InterviewNameTests(unittest.TestCase):
         self.assertEqual(extract_preferences('以后叫你小禾，你叫我林奶奶吧。'),
                          {'interviewer_name':'小禾','narrator_name':'林奶奶'})
 
+    def test_stories_greetings_uncertainty_and_task_requests_are_not_names(self):
+        for text in ['从小在成都长大','还没想好','吃饭了吗','先讲童年','下午再聊','Hello',
+                     '叫你帮忙整理一下','叫你回家','叫你讲故事','叫你唱歌']:
+            with self.subTest(text=text):
+                self.assertEqual(extract_preferences(text,naming_target='interviewer_name'),{})
+
     def test_two_names_have_separate_audit_and_revoke_without_renaming_profile(self):
         self.assertEqual(extract_preferences('以后叫我小林。以后我叫你阿光。'),
                          {'narrator_name': '小林', 'interviewer_name': '阿光'})

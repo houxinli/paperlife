@@ -1,7 +1,7 @@
 {
   "synthetic_only": true,
   "user_turns": 2,
-  "returned_audio_bytes": 698808,
+  "returned_audio_bytes": 672424,
   "microphone_stopped": true,
   "ending_reasons": [
     "narrator_request"
@@ -12,5 +12,6 @@
     "narrator_name"
   ],
   "naming_prompt_consumed": true,
-  "processing_enqueued": 1
+  "processing_enqueued": 1,
+  "validation_stage": "after_review_fixes"
 }
