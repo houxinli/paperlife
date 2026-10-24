@@ -30,11 +30,12 @@ async def interview(client, store, session, profile, authorize=None):
     turn_start = {'user':0.0,'assistant':0.0}
     user_bytes = 0
     diagnostics = {'provider_events':{}, 'audio_chunks':0, 'audio_bytes':0, 'forwarded_audio_chunks':0}
-    def save(role):
+    def save(role, confirmed=False):
         changes=[]
         if pending[role]:
             turn_id=store.add_turn(sid,role,pending[role],turn_start[role])
-            if role=='user':
+            # 断线时仍抢救临时原文，但临时识别不能变成长期采访指令。
+            if role=='user' and confirmed:
                 store.record_quality(sid,turn_id,pending[role],turn_start[role])
                 changes=store.record_preferences(sid,turn_id,pending[role])
             pending[role] = ''
@@ -111,10 +112,10 @@ async def interview(client, store, session, profile, authorize=None):
                                 pending['user'] = result.get('text','')
                                 await client.send_json({'type':'transcript','role':'user','text':pending['user'],'final':not result.get('is_interim',True)})
                                 if not result.get('is_interim',True):
-                                    if save('user'):
+                                    if save('user',confirmed=True):
                                         await client.send_json({'type':'preference_saved'})
                         elif event == 459:
-                            if save('user'):
+                            if save('user',confirmed=True):
                                 await client.send_json({'type':'preference_saved'})
                             input_finished=time.monotonic()
                         elif event in (350,351,359):

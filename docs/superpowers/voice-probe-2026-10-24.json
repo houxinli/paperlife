@@ -1,0 +1,35 @@
+{
+  "synthetic_only": true,
+  "input": "macOS Tingting generated fictional speech, 16kHz PCM mono",
+  "provider": "Doubao O2.0 1.2.1.1",
+  "rounds": [
+    {
+      "round": 0,
+      "asr_started": false,
+      "audio_start_events": 1,
+      "audio_bytes": 171706,
+      "audio_before_text": false
+    },
+    {
+      "round": 1,
+      "asr_started": true,
+      "audio_start_events": 1,
+      "audio_bytes": 279190,
+      "audio_before_text": true
+    },
+    {
+      "round": 2,
+      "asr_started": true,
+      "audio_start_events": 1,
+      "audio_bytes": 373618,
+      "audio_before_text": true
+    },
+    {
+      "round": 3,
+      "asr_started": true,
+      "audio_start_events": 1,
+      "audio_bytes": 478236,
+      "audio_before_text": true
+    }
+  ]
+}

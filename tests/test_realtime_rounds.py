@@ -51,6 +51,21 @@ class RecordingClient:
 
 
 class RealtimeRoundsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_interim_transcript_is_archived_but_never_learned_as_preference(self):
+        text='不要问父母'
+        remote=ScriptedProvider([(450,{'question_id':'q1'}),
+                                 (451,{'results':[{'text':text,'is_interim':True}]})])
+        client=RecordingClient()
+        with tempfile.TemporaryDirectory() as directory:
+            store=Store(Path(directory));store.configure({'api_key':'fictional'})
+            profile=store.create_profile(1,'虚构讲述者','')
+            session=store.create_session(profile['id'],1,'虚构测试')
+            with patch('paperlife.lifebook.realtime.connect',return_value=remote),patch('paperlife.lifebook.processing.enqueue'):
+                await asyncio.wait_for(interview(client,store,session,profile),2)
+            self.assertEqual(store.turns(session['id'])[0]['text'],text)
+            self.assertEqual(store.preferences(profile['id']),[])
+            self.assertFalse(any(isinstance(e,dict) and e['type']=='preference_saved' for e in client.messages))
+
     async def test_tts_boundaries_precede_audio_even_when_text_arrives_later(self):
         events = []
         pcm = b'\x01\x00' * 24

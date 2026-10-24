@@ -45,7 +45,7 @@ async function refresh(){
   const selected=profile?.id||wantedProfile;
   if(selected&&!profiles.some(p=>p.id===selected)){throw Error('这个人生档案尚未授权给当前账号。请联系档案所有者。');}
   if(selected)$('profiles').value=selected;
-  if(profiles.length)await selectProfile();else{$('profile-work').hidden=true;note('先新建一份人生档案，就可以添加采访背景。');}
+  if(profiles.length)await selectProfile();else{setView('read');$('profile-work').hidden=true;note('先新建一份人生档案，就可以添加采访背景。');}
 }
 async function selectProfile(){
   const epoch=++selectionEpoch;const selected=$('profiles').value;
