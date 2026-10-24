@@ -19,7 +19,7 @@ def install_narrator(router,store,current_user,profile_access,guest_access):
     def owned_session(ident,profile):
         session=store.session(ident)
         if not session or session['profile']!=profile:
-            raise HTTPException(404,'采访不存在或未获授权')
+            raise HTTPException(404,'聊天记录不存在或未获授权')
         return session
 
     @router.get('/guest/history')
@@ -34,7 +34,7 @@ def install_narrator(router,store,current_user,profile_access,guest_access):
     @router.get('/guest/history/{ident}/audio')
     def guest_audio(ident:str,track:Literal['user','assistant']='user',link=Depends(guest_access)):
         owned_session(ident,link['profile']);path=store.audio_path(ident,track)
-        if not path.exists():raise HTTPException(404,'这次采访还没有可回听的音频')
+        if not path.exists():raise HTTPException(404,'这次聊天还没有可回听的音频')
         return FileResponse(path,media_type='audio/wav',headers={'Cache-Control':'private, no-store'})
 
     @router.get('/guest/book')

@@ -8,10 +8,10 @@ class PolicyTests(unittest.TestCase):
   self.assertNotIn('explicit_dialect',b['tts'].get('extra',{}))
   self.assertNotIn('自然使用清晰的四川话',b['dialog']['system_role'])
   self.assertIn('本次使用清晰普通话',b['dialog']['system_role'])
- def test_first_opening_asks_preferred_address_without_rechecking_legal_name(self):
+ def test_first_opening_is_present_day_without_rechecking_name(self):
   from paperlife.lifebook.prompt import opening_instruction
   first=opening_instruction({'name':'虚构讲述者甲','context':''})
-  self.assertIn('称呼',first)
+  self.assertIn('天气',first)
   self.assertNotIn('姓名',first)
   self.assertNotIn('最难忘',first)
   self.assertEqual(first.count('？'),1)
@@ -28,13 +28,13 @@ class PolicyTests(unittest.TestCase):
   profile={'name':'虚构讲述者甲','context':''}
   returning=opening_instruction(profile,'上次聊过童年')
   self.assertNotIn('怎么称呼',returning)
-  self.assertIn('住',returning)
+  self.assertIn('吃了',returning)
   self.assertEqual(returning.count('？'),1)
   profile['_interview_preferences']=[{'key':'avoid_topic:childhood','value':'avoid'},
                                    {'key':'topic','value':'hobbies'}]
   alternate=opening_instruction(profile,'上次聊过童年')
   self.assertNotIn('小时候',alternate)
-  self.assertIn('闲下来',alternate)
+  self.assertIn('吃了',alternate)
   self.assertEqual(alternate.count('？'),1)
  def test_quality_flags_do_not_rewrite_dialect_or_force_memory(self):
   from paperlife.lifebook.quality import inspect_transcript

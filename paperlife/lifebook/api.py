@@ -31,7 +31,7 @@ class ProviderInput(BaseModel):
 
 
 class TopicInput(BaseModel):
-    topic: str = Field(default='从称呼和小时候住的地方慢慢聊起', min_length=1, max_length=200)
+    topic: str = Field(default='随便聊聊今天的小事', min_length=1, max_length=200)
     transport: Literal['web','wechat'] = 'web'
 
 
@@ -67,7 +67,7 @@ def build_router(database_path: Path, current_user, account_authorized=None):
     def session_access(ident, user, edit=False):
         s = store.session(ident)
         if not s:
-            raise HTTPException(404, '采访不存在')
+            raise HTTPException(404, '聊天记录不存在')
         profile_access(s['profile'], user, edit=edit)
         return s
 
@@ -164,7 +164,7 @@ def build_router(database_path: Path, current_user, account_authorized=None):
             if entry['expires'] < time.monotonic():
                 tickets.pop(token, None)
         if uid in active or any(t['user']==uid for t in tickets.values()):
-            raise HTTPException(409, '已有采访正在连接或进行中，请结束或等候一分钟')
+            raise HTTPException(409, '已有聊天正在连接或进行中，请结束或等候一分钟')
         session = store.create_session(ident,uid,topic)
         ticket = secrets.token_urlsafe(32)
         tickets[ticket] = {'user':uid,'session':session['id'],'link_id':link_id,'auth_digest':auth_digest,'transport':transport,'expires':time.monotonic()+60}
@@ -237,7 +237,7 @@ def build_router(database_path: Path, current_user, account_authorized=None):
         session_access(ident,user)
         path = store.audio_path(ident,track)
         if not path.exists():
-            raise HTTPException(404, '该采访还没有可回听的音频')
+            raise HTTPException(404, '该聊天还没有可回听的音频')
         return FileResponse(path, media_type='audio/wav', headers={'Cache-Control':'private, no-store'})
 
     @router.websocket('/live')

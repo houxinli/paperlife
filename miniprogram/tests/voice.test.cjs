@@ -27,7 +27,7 @@ test('ending stops actual microphone and prevents late PCM or audio from reopeni
 test('24k playback survives sentence boundaries, cancels on interrupt, rejects stale reply',async()=>{
   const f=fixture(),call=new VoiceCall(f.wx,()=>{});await call.prepare();call.connect('wss://fictional.example/api/life/live','fictional-ticket');f.socket.Open();
   const e=event=>f.socket.Message({data:JSON.stringify(event)}),pcm=()=>f.socket.Message({data:Uint8Array.from([0,128,0,64]).buffer});
-  e({type:'audio_start',reply_id:'r1',question_id:'q1'});pcm();e({type:'sentence_end'});pcm();
+  e({type:'audio_start',reply_id:'r1',question_id:'q1'});pcm();e({type:'audio_sentence_end'});pcm();
   assert.equal(f.sources.length,2);assert.equal(f.sources[0].buffer.rate,24000);assert.deepEqual([...f.sources[0].buffer.data],[-1,.5]);
   e({type:'interrupt',question_id:'q2'});assert.ok(f.sources.every(s=>s.stopped));
   e({type:'audio_start',reply_id:'r1',question_id:'q1'});pcm();assert.equal(f.sources.length,2);
@@ -48,4 +48,11 @@ test('natural ten minute recorder stop ends call instead of appearing to listen'
 test('cancel before socket opens still releases the user interface',async()=>{
   const f=fixture(),events=[],call=new VoiceCall(f.wx,e=>events.push(e));await call.prepare();call.connect('wss://fictional.example/api/life/live','fictional-ticket');call.stop();
   assert.ok(events.some(e=>e.type==='disconnected'));assert.equal(f.recorder.starts.length,0);
+});
+test('native playback reports completion while connected but never after ending',async()=>{
+  const f=fixture(),events=[],call=new VoiceCall(f.wx,e=>events.push(e));await call.prepare();call.connect('wss://fictional.example/api/life/live','fictional-ticket');f.socket.Open();f.socket.Message({data:'{"type":"ready"}'});
+  f.socket.Message({data:'{"type":"audio_start","reply_id":"r1"}'});f.socket.Message({data:new ArrayBuffer(4)});events.length=0;f.sources[0].onended();
+  assert.ok(events.some(e=>e.type==='audio_state'&&e.state==='ready'));
+  f.socket.Message({data:new ArrayBuffer(4)});f.socket.Message({data:'{"type":"ending"}'});events.length=0;f.sources[1].onended();
+  assert.equal(events.some(e=>e.type==='audio_state'&&e.state==='ready'),false);call.dispose();
 });

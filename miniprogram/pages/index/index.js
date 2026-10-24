@@ -96,7 +96,7 @@ Page({
   closeHistory(){this.stopPlayback();this.setData({detail:null});},
   async consent(){
     if(!wx.requirePrivacyAuthorize)throw Error('请更新微信，以查看和确认隐私保护指引');
-    const decision=await invoke(wx,'showModal',{title:'开始这次语音聊天？',content:'拾光是 AI 采访者。您的声音会实时发送到服务端用于语音交流，并保存原声和原始转写。经您或获授权家人确认的整理内容才收入人生之书。可以随时说结束或点击结束按钮。',confirmText:'同意并开始',cancelText:'暂不开始'});
+    const decision=await invoke(wx,'showModal',{title:'开始这次语音聊天？',content:'拾光是 AI，可以和您聊聊日常、记录想留下的事。您的声音会实时发送到服务端用于语音交流，并保存原声和原始转写。经您或获授权家人确认的整理内容才收入人生之书。可以随时说结束或点击结束按钮。',confirmText:'同意并开始',cancelText:'暂不开始'});
     if(!decision.confirm)return false;
     await invoke(wx,'requirePrivacyAuthorize');
     await invoke(wx,'authorize',{scope:'scope.record'});return true;
@@ -120,12 +120,12 @@ Page({
     if(event.type==='preference_saved')this.refreshNames().catch(e=>this.setData({error:e.message}));
     if(event.type==='recording')this.setData({callState:'正在听您说 · 麦克风已打开'});
     if(event.type==='audio_start')this.setData({callState:this.data.interviewerName+'在说话 · 您也可以开口'});
-    if(event.type==='interrupt')this.setData({callState:'正在听您说'});
+    if(event.type==='interrupt')this.setData({callState:'正在听您说',rows:updateTranscript(this.data.rows,event)});
     if(event.type==='transcript'){
       const rows=updateTranscript(this.data.rows,event);this.setData({rows,currentText:event.text||this.data.currentText});
       // No automatic scroll: reading older conversation must not lose its position.
     }
-    if(event.type==='audio_state')this.setData({audioBlocked:event.state==='blocked'});
+    if(event.type==='audio_state'){this.setData({audioBlocked:event.state==='blocked'});if(event.state==='ready'&&this.data.active&&this.app.call&&this.app.call.ready&&!this.app.call.stopping)this.setData({callState:'我在听，您慢慢讲'});}
     if(event.type==='notice'||event.type==='error')this.setData({error:event.message||'语音服务暂时不可用'});
     if(event.type==='ending')this.setData({callState:'麦克风已关闭，正在保存…'});
     if(event.type==='ended'||event.type==='disconnected'){

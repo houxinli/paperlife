@@ -66,3 +66,7 @@ node --test miniprogram/tests/*.test.cjs
 2. 录制可辨识的测试音，确认上行确为 16k/s16le/mono、速度和音高正确；对照服务端原声 WAV 的时长。检查 iOS/Android、耳机及扬声器场景，不能只听 AI 输出就判定输入正常。
 3. 连续至少三轮、多句回答、说话打断、翻阅/折叠历史、静音后恢复、弱网、退出小程序、系统来电、十分钟边界和“结束”语句。确认真实录音指示关闭，末句存档，旧回答不会复活。
 4. 使用不同虚构档案/撤销邀请测试越权拒绝，退出后不继续显示旧内容；重新打开时已保存的会话和已确认人生之书可正常阅读。
+
+## 共享核心维护
+
+长期开发请直接导入完整仓库的 `miniprogram/`，开发包是版本快照。音频回合规则只修改 `shared/audio-gate.js`，再运行 `node scripts/sync_shared.mjs`；不要手改包里的 `lib/audio-gate.js`。CI会核对网页和小程序的生成产物，并按 `contracts/conversation-v1.json` 回放同一协议场景。

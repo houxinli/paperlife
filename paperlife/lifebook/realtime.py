@@ -229,7 +229,7 @@ async def interview(client, store, session, profile, authorize=None):
     except Exception as error:
         diagnostics['failure_type']=type(error).__name__
         with suppress(Exception):
-            await client.send_json({'type':'error','message':'实时语音连接失败或中断。请检查豆包服务是否开通、凭据及余额；已接收的录音保留在历史采访中。'})
+            await client.send_json({'type':'error','message':'实时语音连接失败或中断。请检查豆包服务是否开通、凭据及余额；已接收的录音保留在历史聊天中。'})
     finally:
         # 仅记录协议计数和错误类别，不记录凭据、素材、转写或供应商错误原文。
         logger.info('voice_transport %s',json.dumps(diagnostics,sort_keys=True))
