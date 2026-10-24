@@ -40,3 +40,8 @@ test('spoken name preference refreshes current names without restarting or switc
   page.onVoiceEvent({type:'preference_saved'});await new Promise(resolve=>setImmediate(resolve));
   assert.equal(page.data.interviewerName,'小禾');assert.equal(page.data.narratorName,'林奶奶');assert.equal(stopped,0);assert.equal(page.data.active,true);
 });
+test('playback completion shows listening only while the microphone session remains active',()=>{
+  const {page,app}=pageFixture();app.call={ready:true,stopping:false};page.data.active=true;page.data.callState='小光在说话';
+  page.onVoiceEvent({type:'audio_state',state:'ready'});assert.equal(page.data.callState,'我在听，您慢慢讲');
+  app.call.stopping=true;app.call.ready=false;page.data.callState='正在保存…';page.onVoiceEvent({type:'audio_state',state:'ready'});assert.equal(page.data.callState,'正在保存…');
+});

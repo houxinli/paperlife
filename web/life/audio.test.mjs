@@ -206,3 +206,10 @@ test('ending diagnostics keep the audio gate closed even when a late start arriv
     assert.equal(call.diagnostics.suppressedChunks,1);
   });
 });
+
+test('late playback completion after ending cannot announce ready again',async()=>{
+  await withVoice(async({send,audio,started,events})=>{
+    audio();send({type:'ending'});events.length=0;started[0].onended();
+    assert.equal(events.some(e=>e.type==='audio_state'&&e.state==='ready'),false);
+  });
+});

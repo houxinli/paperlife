@@ -86,7 +86,7 @@ $('provider-form').onsubmit=action(async()=>{await api('/life/provider','PUT',{a
 document.querySelectorAll('[data-topic]').forEach(b=>b.onclick=()=>{$('topic').value=b.dataset.topic;});
 function onEvent(e){
   if(e.type==='ready'){$('call-state').textContent='已经接通';$('live-caption').textContent='我在这里，您慢慢说。';}
-  if(e.type==='audio_state'){$('resume-audio').hidden=e.state!=='blocked';if(e.state==='blocked'){$('call-state').textContent='声音暂停了，点一下就能继续';}else if(e.state==='playing')$('call-state').textContent='拾光在说话';else if(e.state==='ready')$('call-state').textContent='我在听，您慢慢讲';}
+  if(e.type==='audio_state'){$('resume-audio').hidden=e.state!=='blocked';if(e.state==='blocked'){$('call-state').textContent='声音暂停了，点一下就能继续';}else if(e.state==='playing')$('call-state').textContent='拾光在说话';else if(e.state==='ready'&&call?.ready&&!call?.stopping)$('call-state').textContent='我在听，您慢慢讲';}
   if(e.type==='audio_start')$('call-state').textContent='拾光在说话';
   if(e.type==='preference_saved'){$('saved-state').textContent='记住您的聊天习惯了，以后也会留意。';refreshNames().catch(()=>{});}
   if(e.type==='ending'){$('call-state').textContent='听到了，我们先聊到这里。正在保存…';$('stop').disabled=true;}

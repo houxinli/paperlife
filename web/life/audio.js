@@ -99,7 +99,7 @@ export class VoiceCall {
     this.next=Math.max(this.next,this.context.currentTime+.035);
     source.start(this.next);this.next+=buffer.duration;this.sources.add(source);this.diagnostics.scheduledChunks++;
     if(this.sources.size===1&&this.context.state==='running')this.onEvent({type:'audio_state',state:'playing'});
-    source.onended=()=>{this.sources.delete(source);if(!this.sources.size&&!this.closed&&this.context.state==='running')this.onEvent({type:'audio_state',state:'ready'});};
+    source.onended=()=>{this.sources.delete(source);if(!this.sources.size&&!this.closed&&!this.stopping&&this.context.state==='running')this.onEvent({type:'audio_state',state:'ready'});};
   }
   interrupt(){for(const source of this.sources){try{source.stop();}catch{}}this.sources.clear();this.next=0;}
   stopAnswer(){

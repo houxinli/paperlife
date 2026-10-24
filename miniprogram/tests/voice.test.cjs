@@ -49,3 +49,10 @@ test('cancel before socket opens still releases the user interface',async()=>{
   const f=fixture(),events=[],call=new VoiceCall(f.wx,e=>events.push(e));await call.prepare();call.connect('wss://fictional.example/api/life/live','fictional-ticket');call.stop();
   assert.ok(events.some(e=>e.type==='disconnected'));assert.equal(f.recorder.starts.length,0);
 });
+test('native playback reports completion while connected but never after ending',async()=>{
+  const f=fixture(),events=[],call=new VoiceCall(f.wx,e=>events.push(e));await call.prepare();call.connect('wss://fictional.example/api/life/live','fictional-ticket');f.socket.Open();f.socket.Message({data:'{"type":"ready"}'});
+  f.socket.Message({data:'{"type":"audio_start","reply_id":"r1"}'});f.socket.Message({data:new ArrayBuffer(4)});events.length=0;f.sources[0].onended();
+  assert.ok(events.some(e=>e.type==='audio_state'&&e.state==='ready'));
+  f.socket.Message({data:new ArrayBuffer(4)});f.socket.Message({data:'{"type":"ending"}'});events.length=0;f.sources[1].onended();
+  assert.equal(events.some(e=>e.type==='audio_state'&&e.state==='ready'),false);call.dispose();
+});

@@ -87,7 +87,7 @@ class VoiceCall {
     if(this.next-this.context.currentTime>30)throw Error('播放队列过长，已停止本次聊天，请检查声音设置');
     const buffer=this.context.createBuffer(1,values.length,24000);buffer.getChannelData(0).set(values);
     const source=this.context.createBufferSource();source.buffer=buffer;source.connect(this.context.destination);
-    this.next=Math.max(this.next,this.context.currentTime+.035);source.onended=()=>{this.sources.delete(source);try{source.disconnect();}catch{}};
+    this.next=Math.max(this.next,this.context.currentTime+.035);source.onended=()=>{this.sources.delete(source);try{source.disconnect();}catch{}if(!this.sources.size&&!this.closed&&!this.stopping&&this.ready&&this.context.state==='running')this.onEvent({type:'audio_state',state:'ready'});};
     this.sources.add(source);source.start(this.next);this.next+=buffer.duration;
   }
   interrupt(){for(const source of this.sources){try{source.stop();source.disconnect();}catch{}}this.sources.clear();this.next=0;}

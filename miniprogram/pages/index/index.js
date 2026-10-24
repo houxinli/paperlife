@@ -125,7 +125,7 @@ Page({
       const rows=updateTranscript(this.data.rows,event);this.setData({rows,currentText:event.text||this.data.currentText});
       // No automatic scroll: reading older conversation must not lose its position.
     }
-    if(event.type==='audio_state')this.setData({audioBlocked:event.state==='blocked'});
+    if(event.type==='audio_state'){this.setData({audioBlocked:event.state==='blocked'});if(event.state==='ready'&&this.data.active&&this.app.call&&this.app.call.ready&&!this.app.call.stopping)this.setData({callState:'我在听，您慢慢讲'});}
     if(event.type==='notice'||event.type==='error')this.setData({error:event.message||'语音服务暂时不可用'});
     if(event.type==='ending')this.setData({callState:'麦克风已关闭，正在保存…'});
     if(event.type==='ended'||event.type==='disconnected'){
