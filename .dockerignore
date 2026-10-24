@@ -1,0 +1,11 @@
+.git
+.env*
+data
+private
+.venv
+__pycache__
+**/__pycache__
+*.wav
+*.pcm
+*.sqlite*
+*.db

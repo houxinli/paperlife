@@ -1,0 +1,6 @@
+{$PAPERLIFE_DOMAIN} {
+    encode gzip
+    header Referrer-Policy "no-referrer"
+    header X-Content-Type-Options "nosniff"
+    reverse_proxy api:8000
+}

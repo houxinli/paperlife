@@ -1,0 +1,1 @@
+{"name":"paperlife","private":true,"type":"module","scripts":{"test":"node --test web/life/*.test.mjs"}}
