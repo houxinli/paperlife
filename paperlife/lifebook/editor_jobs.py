@@ -233,5 +233,3 @@ def enqueue_missing(store):
         ids = [r['id'] for r in db.execute("SELECT s.id FROM sessions s WHERE s.status IN ('ended','interrupted') AND EXISTS(SELECT 1 FROM turns t WHERE t.session=s.id AND t.role='user' AND trim(t.text)!='') AND NOT EXISTS(SELECT 1 FROM processing_jobs p WHERE p.session=s.id) AND NOT EXISTS(SELECT 1 FROM writing_jobs j WHERE j.kind='material' AND j.profile=s.profile AND json_extract(j.snapshot,'$.sources[0].id')=s.id)")]
     for ident in ids:
         enqueue_session(store, ident)
-
-
