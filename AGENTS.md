@@ -8,3 +8,5 @@
 - 不承诺四川话效果、国内延迟或心理学有效性，须区分参数配置、协议验证和真人验收。
 - 共享音频规则只修改 `shared/audio-gate.js`，再运行 `node scripts/sync_shared.mjs`；两端生成产物不得手改。协议变化须更新 `contracts/conversation-v1.json` 和生产者/双端回放测试，破坏性变更先设计版本协商。
 - 产品业务以本仓库为唯一开发源。旧 paperbridge 站只做有清单的兼容回补；不在两个仓库独立演化人生之书逻辑，正式迁移后移除临时副本。
+- 有明确验收目标的功能使用GitHub Issue跟踪，PR关联Issue；复用现有跨项目Roadmap看板 https://github.com/users/houxinli/projects/2 的Todo/In Progress/Done。软件部署与未完成的真机验收分别记录，不为每条命令另建Issue。
+- 旁听不输出语音、不从人际谈话学习AI偏好；名单不是声音身份。未确认主体声音绑定时不能当本人素材成章，归属/文字修订必须保留原始识别并使衍生草稿过期。

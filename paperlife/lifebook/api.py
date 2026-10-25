@@ -143,7 +143,7 @@ def build_router(database_path: Path, current_user, account_authorized=None):
     def sessions(ident: str, user=Depends(current_user)):
         profile_access(ident,user)
         with store.db() as db:
-            return [dict(r) for r in db.execute('SELECT id,title,status,created_at,version FROM sessions WHERE profile=? ORDER BY created_at DESC', (ident,))]
+            return [dict(r) for r in db.execute('SELECT id,title,status,created_at,version,mode FROM sessions WHERE profile=? ORDER BY created_at DESC', (ident,))]
 
     @router.get('/profiles/{ident}/preferences')
     def preferences(ident: str, user=Depends(current_user)):
@@ -157,8 +157,13 @@ def build_router(database_path: Path, current_user, account_authorized=None):
             raise HTTPException(404,'这条聊天习惯不存在或已撤销')
         return {'ok':True}
 
-    def issue_ticket(ident, uid, topic, link_id=None, auth_digest=None, transport='web'):
-        if not configured():
+    def issue_ticket(ident, uid, topic, link_id=None, auth_digest=None, transport='web', mode='dialogue', participants=None):
+        if mode == 'listening':
+            from .listening_asr import public_config
+            configuration = public_config(store)
+            if not configuration['enabled'] or not configuration['configured']:
+                raise HTTPException(503, '请管理员先配置并启用旁听识别服务')
+        elif not configured():
             raise HTTPException(503, '请管理员先配置豆包实时语音服务')
         for token, entry in list(tickets.items()):
             if entry['expires'] < time.monotonic():
@@ -166,6 +171,10 @@ def build_router(database_path: Path, current_user, account_authorized=None):
         if uid in active or any(t['user']==uid for t in tickets.values()):
             raise HTTPException(409, '已有聊天正在连接或进行中，请结束或等候一分钟')
         session = store.create_session(ident,uid,topic)
+        if mode == 'listening':
+            from .listening_store import initialize
+            initialize(store,session['id'],participants or [])
+            session = store.session(session['id'])
         ticket = secrets.token_urlsafe(32)
         tickets[ticket] = {'user':uid,'session':session['id'],'link_id':link_id,'auth_digest':auth_digest,'transport':transport,'expires':time.monotonic()+60}
         return {**session,'ticket':ticket}
@@ -275,7 +284,10 @@ def build_router(database_path: Path, current_user, account_authorized=None):
                 raise ValueError('Access denied')
             active.add(uid)
             claimed = True
-            from .realtime import interview
+            if s.get('mode') == 'listening':
+                from .listening_stream import listen as interview
+            else:
+                from .realtime import interview
             def authorize():
                 if link_id:
                     current=store.link(link_id=link_id)
@@ -297,6 +309,8 @@ def build_router(database_path: Path, current_user, account_authorized=None):
             except Exception:
                 pass
 
+    from .listening_api import install_listening
+    install_listening(router,store,current_user,profile_access,session_access,guest_access,issue_ticket)
     from .content import install_content
     install_content(router,store,current_user,profile_access)
     from .narrator import install_narrator

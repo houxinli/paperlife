@@ -38,7 +38,7 @@ export function createBook({api,profile,openSession,note}){
       card.append(el('p',i.body,'book-body'));if(i.answer)card.append(el('p','家人补充：'+i.answer,'book-answer'));
       const refs=el('div','','source-links');for(const id of i.source_ids){const s=sources.find(s=>s.id===id);const session=sessions.find(s=>s.id===id);if(s)refs.append(click('原文：'+s.title,()=>showSource(s.title,s.text)));if(session)refs.append(click('回听：'+session.title,()=>openSession(id)));}card.append(refs);
       for(const evidence of i.evidence||[]){
-        const source=el('div','','evidence');const label=evidence.revision?`人工校订版本 ${evidence.revision}`:evidence.source_kind==='source'?'导入原文':`原始转写 #${evidence.turn_id}`;
+        const source=el('div','','evidence');const label=evidence.segment_id?`${evidence.speaker?.name||'未知声音'} · ${evidence.origin==='human_revision'?'分句校订':'原始识别'} · 归属版本 ${evidence.annotation_revision}`:evidence.revision?`人工校订版本 ${evidence.revision}`:evidence.source_kind==='source'?'导入原文':`原始转写 #${evidence.turn_id}`;
         source.append(el('p',`${label}${evidence.paragraph?' · 故事第'+evidence.paragraph+'段':''}：“${evidence.quote}”`));
         if(evidence.session_id)source.append(click(evidence.seconds==null?'回听原声（校订稿无法逐句定位）':`回听约 ${Math.floor(evidence.seconds)} 秒处`,()=>openSession(evidence.session_id,Math.max(0,(evidence.seconds||0)-2))));
         const snap=(i.source_snapshot||[]).find(s=>s.unit_id===evidence.unit_id);if(snap)source.append(click('查看生成时的素材版本',()=>showSource(`${snap.title} · 版本 ${snap.revision}`,snap.text)));

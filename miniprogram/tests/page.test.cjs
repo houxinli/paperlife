@@ -59,3 +59,8 @@ test('book preserves corrected/imported provenance and reads confirmed chapters 
   assert.equal(page.data.book[0].evidence[1].source_label,'导入原文');
   assert.equal(page.data.book[0].evidence[1].can_open,false);
 });
+test('listening evidence identifies the other speaker instead of the book subject',async()=>{
+  const {page}=pageFixture();page.data.profile={id:'fictional-a'};
+  page.api={base:()=>'/life/profiles/fictional-a',request:async()=>({items:[{status:'confirmed',title:'虚构来源',evidence:[{segment_id:'s1',revision:1,annotation_revision:1,speaker:{name:'虚构亲友',is_subject:false},origin:'original_transcript',quote:'我住在其他地方。'}]}]})};
+  await page.loadBook();assert.equal(page.data.book[0].evidence[0].source_label,'虚构亲友 · 原始识别 · 归属版本 1');
+});

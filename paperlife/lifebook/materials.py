@@ -36,6 +36,23 @@ def material(store, profile, kind, ident, db=None):
             row = conn.execute('SELECT * FROM sessions WHERE id=? AND profile=?', (ident, profile)).fetchone()
             if not row or row['status'] not in ('ended', 'interrupted'):
                 raise MaterialError('只能使用此档案已结束的聊天')
+            if row['mode'] == 'listening':
+                from .listening_store import detail
+                listening = detail(store, ident, db=conn)
+                participants = {p['id']: p for p in listening['participants']}
+                units = []
+                for segment in listening['segments']:
+                    participant = participants.get(segment['participant_id'])
+                    speaker = {'id': segment['speaker_id'], 'name': participant['name'] if participant else '未知声音',
+                               'relationship': participant['relationship'] if participant else '',
+                               'is_subject': bool(participant and participant['is_subject']), 'confirmed': bool(participant)}
+                    units.append({**segment, 'speaker': speaker})
+                original = '\n'.join(f"声音组 {u['speaker_id']}：{u['text']}" for u in listening['original_segments'])
+                text = '\n'.join(f"{u['speaker']['name']}（{u['speaker_id']}）：{u['text']}" for u in units)
+                return {'kind': kind, 'id': ident, 'title': row['title'], 'revision': row['version'], 'mode': 'listening',
+                        'text': text, 'original_text': original, 'segments': units, 'has_audio': store.audio_path(ident).exists(),
+                        'identity_confirmed': any(u['speaker']['confirmed'] and u['speaker']['is_subject'] for u in units),
+                        'recognition_status': listening['recognition_status']}
             turns = [dict(t) for t in conn.execute('SELECT * FROM turns WHERE session=? ORDER BY id', (ident,))]
             original = '\n\n'.join(t['text'] for t in turns if t['role'] == 'user')
             # version>0 的空校订是明确排除内容，不回退到原文。
@@ -60,7 +77,9 @@ def list_materials(store, profile):
         result = []
         for ref in refs:
             m = material(store, profile, ref['kind'], ref['id'], db)
-            result.append({k: m[k] for k in ('kind', 'id', 'title', 'revision', 'has_audio')} | {'chars': len(m['text'])})
+            result.append({k: m[k] for k in ('kind', 'id', 'title', 'revision', 'has_audio')} | {'chars': len(m['text'])}
+                          | ({'mode': 'listening', 'identity_confirmation_required': not m['identity_confirmed'],
+                              'recognition_status': m['recognition_status']} if m.get('mode') == 'listening' else {}))
         return result
 
 
@@ -75,7 +94,19 @@ def snapshot(store, profile, refs, db=None, max_chars=40000):
             selected.append({'kind': kind, 'id': ident, 'revision': m['revision'], 'text_hash': digest(m['text'])})
             base = {'source_kind': kind, 'source_id': ident, 'revision': m['revision'], 'title': m['title'],
                     'turn_id': None, 'seconds': None, 'context': ''}
-            if kind == 'session' and m['revision'] == 0:
+            if m.get('mode') == 'listening':
+                if not m['identity_confirmed']:
+                    raise MaterialError('请先在旁听校订中手工确认至少一个声音组属于档案主体，再整理素材或生成章节')
+                for segment in m['segments']:
+                    if segment['text'].strip():
+                        units.append({**base, 'unit_id': f"session:{ident}:segment:{segment['id']}:revision:{m['revision']}",
+                                      'text': segment['text'], 'seconds': segment['start_ms']/1000,
+                                      'segment_id': segment['id'], 'start_ms': segment['start_ms'], 'end_ms': segment['end_ms'],
+                                      'annotation_revision': m['revision'], 'speaker': segment['speaker'],
+                                      'original_text': segment['original_text'], 'original_speaker_id': segment['original_speaker_id'],
+                                      'recognition_status': m['recognition_status'],
+                                      'origin': 'human_revision' if segment['text'] != segment['original_text'] else 'original_transcript'})
+            elif kind == 'session' and m['revision'] == 0:
                 context = ''
                 for turn in m['turns']:
                     if turn['role'] == 'assistant':
@@ -120,6 +151,8 @@ def revise(store, profile, kind, ident, text, version, editor, title=None):
         if current['revision'] != version:
             raise ConflictError('素材已被修改，请刷新后再保存')
         if kind == 'session':
+            if current.get('mode') == 'listening':
+                raise MaterialError('旁听包含声音归属，请使用旁听校订编辑器，不能用全文校订覆盖')
             db.execute('UPDATE sessions SET edited_text=?,title=?,version=version+1 WHERE id=? AND version=?',
                        (text, title if title is not None else current['title'], ident, version))
             db.execute('INSERT INTO revisions(session,version,text,editor) VALUES(?,?,?,?)', (ident, version+1, text, editor))
@@ -142,6 +175,9 @@ def checked_evidence(citations, units, paragraph=None):
         if len(quote) < 4 and quote != u['text'].strip():
             raise MaterialError('引用过短，无法可靠定位')
         e = {k: u[k] for k in ('unit_id', 'source_kind', 'source_id', 'revision', 'title', 'turn_id', 'seconds', 'origin')}
+        for key in ('speaker', 'segment_id', 'start_ms', 'end_ms', 'annotation_revision', 'original_text', 'original_speaker_id', 'recognition_status'):
+            if key in u:
+                e[key] = u[key]
         e['quote'] = quote
         if u['source_kind'] == 'session':
             e['session_id'] = u['source_id']

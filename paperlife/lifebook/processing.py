@@ -44,7 +44,7 @@ class Stories(BaseModel):
 
 def enqueue(store,session_id):
     session=store.session(session_id)
-    if not session or session['status'] not in ('ended','interrupted'):return None
+    if not session or session.get('mode')=='listening' or session['status'] not in ('ended','interrupted'):return None
     turns=[];context='';context_id=None
     for turn in store.turns(session_id):
         if turn['role']=='assistant':context=turn['text'];context_id=turn['id']
@@ -153,7 +153,7 @@ async def worker(store):
 
 def enqueue_missing(store):
     with store.db() as db:
-        ids=[r['id'] for r in db.execute("SELECT s.id FROM sessions s WHERE s.status IN ('ended','interrupted') AND EXISTS(SELECT 1 FROM turns t WHERE t.session=s.id AND t.role='user' AND trim(t.text)!='') AND NOT EXISTS(SELECT 1 FROM processing_jobs j WHERE j.session=s.id)")]
+        ids=[r['id'] for r in db.execute("SELECT s.id FROM sessions s WHERE s.mode='dialogue' AND s.status IN ('ended','interrupted') AND EXISTS(SELECT 1 FROM turns t WHERE t.session=s.id AND t.role='user' AND trim(t.text)!='') AND NOT EXISTS(SELECT 1 FROM processing_jobs j WHERE j.session=s.id)")]
     for ident in ids:enqueue(store,ident)
 
 
@@ -161,5 +161,13 @@ def recover_interrupted(store):
     # 当前生产部署为单进程；启动前不存在可继续使用的旧WebSocket/ticket。
     with store.db() as db:
         db.execute("UPDATE sessions SET status='interrupted' WHERE status IN ('active','connecting')")
+        # 持久化的累计临时快照在进程重启后不能继续冒充实时/完整识别。
+        db.execute("UPDATE listening_originals SET recognition_status=CASE WHEN segments='[]' THEN 'failed' ELSE 'incomplete' END,finalized=1 WHERE finalized=0 AND session IN (SELECT id FROM sessions WHERE mode='listening' AND status='interrupted')")
+        # 崩溃前若只有临时快照，恢复可读的声音组原文，避免历史显示空白。
+        for row in db.execute("SELECT session,segments FROM listening_originals WHERE finalized=1 AND recognition_status IN ('failed','incomplete') AND NOT EXISTS(SELECT 1 FROM turns WHERE turns.session=listening_originals.session)").fetchall():
+            for segment in json.loads(row['segments']):
+                if segment['text'].strip():
+                    db.execute('INSERT INTO turns(session,role,text,seconds) VALUES(?,?,?,?)',
+                               (row['session'],'user',f"声音组 {segment['speaker_id']}：{segment['text']}",segment['start_ms']/1000))
     from .editor_jobs import enqueue_missing as new_missing
     new_missing(store)

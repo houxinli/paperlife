@@ -59,6 +59,14 @@ test('multiple selected material identities generate a chapter without confirmin
   await h.get('chapter-create-form').onsubmit({preventDefault(){}});
   assert.deepEqual(writes,[['POST',{title:'虚构新章',brief:'写少年往事'}],['POST',{sources:[{kind:'session',id:'fiction-session'},{kind:'source',id:'fiction-import'}],brief:'写少年往事'}]]);
 });
+test('listening materials use attribution editor and unconfirmed subject is not selectable',async()=>{
+  const h=setup(fixtureApi({'/life/profiles/fiction-a/materials':async()=>({materials:[{...material,mode:'listening',identity_confirmation_required:true}]})}));
+  await h.ui.load();
+  assert.equal(h.all().find(n=>n.type==='checkbox').disabled,true);
+  await h.button('校订：虚构少年往事').onclick();
+  assert.deepEqual(h.audio,[['fiction-session']]);
+  assert.equal(h.get('chapter-material-form'),undefined);
+});
 test('draft edits save with edit_version before explicit confirmation; confirmed text stays visible',async()=>{
   let version={...draft};const calls=[];const h=setup(fixtureApi({
     '/life/chapters/chapter-a':async()=>({chapter:{id:'chapter-a',published_version_id:'confirmed-1'},versions:[version,accepted]}),
