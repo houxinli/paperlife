@@ -27,7 +27,8 @@ Paperlife 采用一套后端业务、一份共享纯状态机，以及 Web/微�
 | 账号与身份 | `paperlife/auth.py`、`identity_providers.py` | 密码、短信、微信登录；普通身份不自动取得家人授权 |
 | REST 与授权 | `lifebook/api.py`、`narrator.py`、`content.py` | 账号/guest 范围、一次性票据、历史、confirmed 内容与家人校对 |
 | 实时对话 | `lifebook/realtime.py`、`prompt.py`、`preferences.py`、`policies/interviewer.md` | 模型代理、开场、结束意愿、明确偏好；不由模型修改授权 |
-| 资料与整理 | `lifebook/store.py`、`processing.py`、`generation.py` | 原声/原始转写保留、草稿、确认及来源 |
+| 资料与整理 | `lifebook/store.py`、`materials.py`、`editor_jobs.py` | 原文/校订快照、素材提取与版本化编辑任务；旧 processing/generation 保留历史任务兼容 |
+| 章节与模型 | `lifebook/chapters.py`、`chapter_api.py`、`editor_models.py`、`writing_rules.py` | 跨会话写作、独立模型配置、非虚构规则、人工发布及不可变确认版本 |
 | 共享纯逻辑 | `shared/audio-gate.js` | 回答音频边界、取消/完成记录、结束后不可重新开门 |
 | Web 音频适配 | `web/life/audio.js`、`capture.js` | getUserMedia、AudioWorklet、WebSocket、浏览器播放和恢复声音 |
 | 微信音频适配 | `miniprogram/lib/voice.js`、`pcm.js`、`protocol.js` 的 OrderedSender | RecorderManager、PCM/WAV 分片、回调式发送与背压、设备生命周期 |

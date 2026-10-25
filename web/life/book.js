@@ -33,6 +33,7 @@ export function createBook({api,profile,openSession,note}){
     if(!visible.length)root.append(el('p',layer==='review'?'暂无待审核草稿。聊天结束后会自动整理，也可在历史聊天中手动发起。':layer==='question'?'暂时没有待确认问题。AI提议的问题需在待审核区确认后进入这里。':'这里只展示你确认过的内容。请先到待审核区校对确认。','muted'));
     for(const i of visible){
       const card=el('article','','book-card');card.append(el('small',kinds[i.kind]+' · '+states[i.status]),el('h3',i.title));
+      if(i.stale)card.append(el('p',i.status==='draft'?'素材已校订：请审核新整理条目，这份旧草稿不能直接确认。':'来源有新的校订；这是此前已确认的内容。','muted'));
       const meta=[i.time_text,i.people,i.place].filter(Boolean).join(' · ');if(meta)card.append(el('p',meta,'muted'));
       card.append(el('p',i.body,'book-body'));if(i.answer)card.append(el('p','家人补充：'+i.answer,'book-answer'));
       const refs=el('div','','source-links');for(const id of i.source_ids){const s=sources.find(s=>s.id===id);const session=sessions.find(s=>s.id===id);if(s)refs.append(click('原文：'+s.title,()=>showSource(s.title,s.text)));if(session)refs.append(click('回听：'+session.title,()=>openSession(id)));}card.append(refs);
@@ -49,7 +50,8 @@ export function createBook({api,profile,openSession,note}){
     }
   }
   function edit(item){
-    current={...item};$('item-heading').textContent=kinds[item.kind];$('item-message').textContent='';
+    current={...item};$('item-heading').textContent=kinds[item.kind];$('item-message').textContent=item.stale&&item.status==='draft'?'素材已校订，请使用新整理条目。旧草稿可保留或归档。':'';
+    $('confirm-item').disabled=!!item.stale&&item.status==='draft';
     for(const [id,key] of [['item-title','title'],['item-body','body'],['item-answer','answer'],['item-time','time_text'],['item-people','people'],['item-place','place']])$(id).value=item[key]||'';
     $('item-certainty').value=item.certainty||'unverified';$('structured-fields').hidden=!['fact','person','event'].includes(item.kind);$('answer-label').hidden=item.kind!=='question';
     $('item-status').replaceChildren();for(const state of item.kind==='question'?['draft','open','resolved','archived']:['draft','confirmed','archived']){const o=el('option',states[state]);o.value=state;$('item-status').append(o);}$('item-status').value=item.status||(item.kind==='question'?'open':'draft');

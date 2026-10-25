@@ -193,6 +193,8 @@ class Store:
             result=dict(row)
             for key, fallback in [('source_ids','[]'),('evidence','[]'),('generation_metadata','{}'),('source_snapshot','[]')]:
                 result[key]=json.loads(result.get(key) or fallback)
+            from .materials import item_stale
+            result['stale']=item_stale(self,result,db)
             return result
 
     def add_item(self, profile, data):

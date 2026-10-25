@@ -70,7 +70,7 @@
         <view wx:if="{{!book.length}}" class="empty">确认后的故事，会一页一页积累在这里。</view>
         <view wx:for="{{book}}" wx:key="id" class="card">
           <view class="title">{{item.title}}</view><view class="muted">{{item.time_text}} {{item.place}}</view><text selectable class="body">{{item.body}}</text>
-          <view wx:for="{{item.evidence}}" wx:for-item="evidence" wx:key="turn_id" class="evidence"><text selectable>原始转写：{{evidence.quote}}</text><button class="small" data-id="{{evidence.session_id}}" bindtap="openHistory">查看来源对话</button></view>
+          <view wx:for="{{item.evidence}}" wx:for-item="evidence" wx:key="index" class="evidence"><text selectable>{{evidence.source_label}}：{{evidence.quote}}</text><button wx:if="{{evidence.can_open}}" class="small" data-id="{{evidence.session_id}}" bindtap="openHistory">查看来源对话</button></view>
         </view>
       </view>
     </block>

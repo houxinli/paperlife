@@ -70,11 +70,15 @@ def install_content(router,store,current_user,profile_access):
         if not item:raise HTTPException(404,'条目不存在')
         profile_access(item['profile'],user,edit=True)
         validate_sources(item['profile'],data.source_ids)
-        if any(e['session_id'] not in data.source_ids for e in item.get('evidence',[])):
+        if any((e.get('source_id') or e.get('session_id')) not in data.source_ids for e in item.get('evidence',[])):
             raise HTTPException(422,'不能移除自动草稿引用的原始采访')
         if item['kind']!=data.kind:raise HTTPException(422,'条目类型不可更换，请另建条目保留层级')
         d=data.model_dump()
         with store.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            from .materials import item_stale
+            if item['status']=='draft' and data.status in ('confirmed','open','resolved') and item_stale(store,item,db):
+                raise HTTPException(409,'素材已经校订，请使用新整理的条目；旧草稿可保留或归档')
             updated=db.execute('UPDATE items SET title=?,body=?,answer=?,status=?,source_ids=?,time_text=?,people=?,place=?,certainty=?,version=version+1 WHERE id=? AND version=?',
                                (data.title,data.body,data.answer,data.status,json.dumps(data.source_ids),data.time_text,data.people,data.place,data.certainty,ident,data.version))
             if not updated.rowcount:raise HTTPException(409,'条目已有新版本，请重新打开')

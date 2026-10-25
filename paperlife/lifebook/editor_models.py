@@ -14,7 +14,7 @@ from websockets.asyncio.client import connect
 
 from .generation import parse_output
 from .protocol import decode, encode
-from .writing_rules import PROMPT_VERSION, prompt_hash, stage_prompt
+from .writing_rules import PROMPT_VERSION, prompt_hash, stage_prompt, task_message
 
 MAX_INPUT_BYTES = 240_000
 MAX_OUTPUT_BYTES = 160_000
@@ -260,6 +260,7 @@ async def generate_editor(store, stage, payload):
         raise ValueError('invalid_editor_payload') from None
     if len(material.encode('utf-8')) > MAX_INPUT_BYTES:
         raise ValueError('editor_input_limit')
+    material = task_message(stage, material)
     config = _read_config(store)['extractor' if stage == 'extract' else 'writer']
     if not _configured(store, config):
         raise ValueError('provider_unconfigured')

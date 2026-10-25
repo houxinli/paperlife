@@ -5,7 +5,7 @@ import time
 import uuid
 
 from . import chapters
-from .materials import MaterialError, checked_evidence, digest, snapshot
+from .materials import MaterialError, ConflictError, checked_evidence, digest, snapshot
 
 
 def _json(value):
@@ -235,4 +235,3 @@ def enqueue_missing(store):
         enqueue_session(store, ident)
 
 
-from .materials import ConflictError

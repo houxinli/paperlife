@@ -81,7 +81,9 @@ Page({
   async loadBook(){
     if(!this.data.profile)return;const epoch=this.epoch,scope=this.data.scope;
     const result=await this.api.request(this.api.base(this.data.profile,scope)+'/book','GET',null,scope);
-    if(epoch===this.epoch)this.setData({book:(result.items||[]).filter(i=>i.status==='confirmed'),pendingCount:result.pending_count||0});
+    if(epoch===this.epoch)this.setData({book:[...(result.items||[]),...(result.chapters||[])].filter(i=>i.status==='confirmed').map(item=>({...item,
+      time_text:item.number?`已确认第 ${item.number} 版`:item.time_text,
+      evidence:(item.evidence||[]).map(e=>({...e,source_label:e.revision?`人工校订版本 ${e.revision}`:e.source_kind==='source'?'导入原文':'原始转写',can_open:!!e.session_id}))})),pendingCount:result.pending_count||0});
   },
   refreshReading(){this.run(()=>Promise.all([this.loadHistory(true),this.loadBook()]));},
   async refreshNames(){
@@ -91,7 +93,7 @@ Page({
     this.setData({profile:{...this.data.profile,interviewer_name:updated.interviewer_name,narrator_name:updated.narrator_name},
       narratorName:updated.narrator_name||this.data.profile.name,interviewerName:updated.interviewer_name||'拾光'});
   },
-  openHistory(e){this.openSession(e.currentTarget.dataset.id);},
+  openHistory(e){if(e.currentTarget.dataset.id)this.openSession(e.currentTarget.dataset.id);},
   openSession(id){this.run(async()=>{const epoch=this.epoch;this.stopPlayback();const detail=await this.api.request(this.api.detail(id,this.data.scope),'GET',null,this.data.scope);if(epoch===this.epoch)this.setData({detail,tab:'history'});});},
   closeHistory(){this.stopPlayback();this.setData({detail:null});},
   async consent(){

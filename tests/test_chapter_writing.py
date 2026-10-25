@@ -228,3 +228,28 @@ class ChapterTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text); self.assertNotIn('synthetic-secret', r.text)
         self.assertNotIn('synthetic-secret', self.client.get('/life/editor-models').text)
         self.assertEqual(r.json()['extractor']['provider'], 'doubao_realtime')
+
+    def test_imported_extraction_can_be_reviewed_and_confirmed(self):
+        p=self.store.create_profile(1,'虚构文档人物','我在虚构书店工作。')
+        with self.store.db() as db:
+            source=dict(db.execute('SELECT * FROM sources WHERE profile=?',(p['id'],)).fetchone())
+        self.client.put(f"/life/profiles/{p['id']}/materials/source/{source['id']}",json={'text':'我在虚构文具店工作。','version':0})
+        self.run_jobs()
+        with self.store.db() as db:
+            ident=db.execute('SELECT id FROM items WHERE profile=?',(p['id'],)).fetchone()['id']
+        item=self.store.item(ident)
+        r=self.client.put(f'/life/items/{ident}',json={**item,'status':'confirmed'})
+        self.assertEqual(r.status_code,200,r.text)
+
+    def test_stale_extracted_fact_cannot_be_confirmed_after_source_correction(self):
+        sid=self.sessions[0]['id']
+        url=f'/life/profiles/{self.pid}/materials/session/{sid}'
+        self.client.put(url,json={'text':'我在虚构甲校读书。','version':0});self.run_jobs()
+        with self.store.db() as db:
+            ident=db.execute('SELECT id FROM items WHERE profile=?',(self.pid,)).fetchone()['id']
+        item=self.store.item(ident)
+        self.client.put(url,json={'text':'我在虚构乙校读书。','version':1})
+        r=self.client.put(f'/life/items/{ident}',json={**item,'status':'confirmed'})
+        self.assertEqual(r.status_code,409,r.text)
+        returned=self.client.get(f'/life/profiles/{self.pid}/items').json()
+        self.assertTrue(next(i for i in returned if i['id']==ident)['stale'])

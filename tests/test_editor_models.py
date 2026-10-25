@@ -170,6 +170,9 @@ class EditorModelsTests(unittest.TestCase):
         self.assertIn('非虚构', start['data']['dialog']['system_role'])
         self.assertEqual(start['data']['dialog']['extra']['model'], '1.2.1.1')
         self.assertEqual(result['metadata']['provider'], 'doubao_realtime')
+        task = next(item for item in socket.sent if item['event'] == 501)['data']['content']
+        self.assertTrue(task.startswith('当前任务：outline'))
+        self.assertIn('"outline"', task)
 
     def test_response_body_limit_even_if_content_is_small(self):
         self.config()

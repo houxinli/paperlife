@@ -97,11 +97,20 @@ def snapshot(store, profile, refs, db=None, max_chars=40000):
             'selected_versions': selected, 'source_hash': digest({'selected': selected, 'units': units})}
 
 
-def stale(store, profile, refs, source_hash, db=None):
+def stale(store, profile, refs, source_hash, db=None, max_chars=40000):
     try:
-        return snapshot(store, profile, refs, db)['source_hash'] != source_hash
+        return snapshot(store, profile, refs, db, max_chars=max_chars)['source_hash'] != source_hash
     except MaterialError:
         return True
+
+
+def item_stale(store, item, db=None):
+    units = item.get('source_snapshot') or []
+    if not units or not item.get('input_hash'):
+        return False
+    refs = [{'kind': kind, 'id': ident} for kind, ident in
+            sorted({(u['source_kind'], u['source_id']) for u in units})]
+    return stale(store, item['profile'], refs, item['input_hash'], db, max_chars=120000)
 
 
 def revise(store, profile, kind, ident, text, version, editor, title=None):
