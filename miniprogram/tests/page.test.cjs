@@ -45,3 +45,17 @@ test('playback completion shows listening only while the microphone session rema
   page.onVoiceEvent({type:'audio_state',state:'ready'});assert.equal(page.data.callState,'我在听，您慢慢讲');
   app.call.stopping=true;app.call.ready=false;page.data.callState='正在保存…';page.onVoiceEvent({type:'audio_state',state:'ready'});assert.equal(page.data.callState,'正在保存…');
 });
+test('book preserves corrected/imported provenance and reads confirmed chapters only',async()=>{
+  const {page}=pageFixture();page.data.profile={id:'fictional-a'};
+  page.api={base:()=>'/life/profiles/fictional-a',request:async()=>({items:[{id:'fact',status:'confirmed',title:'虚构事实',evidence:[
+    {quote:'校订句子',revision:2,session_id:'fictional-session',source_kind:'session',seconds:null},
+    {quote:'导入句子',revision:0,source_id:'fictional-document',source_kind:'source'}]}],chapters:[
+      {id:'chapter-confirmed',status:'confirmed',title:'虚构确认章',number:1,body:'确认版',evidence:[]},
+      {id:'chapter-draft',status:'draft',title:'不可见草稿',body:'秘密',evidence:[]}],pending_count:1})};
+  await page.loadBook();
+  assert.equal(page.data.book.length,2);assert.equal(page.data.book[1].title,'虚构确认章');
+  assert.equal(page.data.book[0].evidence[0].source_label,'人工校订版本 2');
+  assert.equal(page.data.book[0].evidence[0].can_open,true);
+  assert.equal(page.data.book[0].evidence[1].source_label,'导入原文');
+  assert.equal(page.data.book[0].evidence[1].can_open,false);
+});

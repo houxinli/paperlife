@@ -56,6 +56,29 @@ class NarratorReadingTests(unittest.TestCase):
         self.assertEqual(self.client.get(path,headers=self.h).status_code,401)
         self.assertEqual(self.client.get('/api/life/guest/book',headers=self.h).status_code,401)
 
+    def test_confirmed_chapter_reading_does_not_expose_full_generation_snapshot(self):
+        import asyncio
+        from paperlife.lifebook import chapters, editor_jobs
+        c=chapters.create(self.store,self.a['id'],'虚构章节','编辑私有约定')
+        editor_jobs.enqueue_chapter(self.store,self.a['id'],c['id'],[{'kind':'session','id':self.sa['id']}],1)
+        async def fake(stage,payload):
+            u=payload['materials'][0]
+            if stage=='outline':out={'outline':[{'title':'虚构小节'}]}
+            elif stage=='audit':out={'ok':True,'issues':[]}
+            elif stage=='polish':out=payload['draft']
+            else:out={'title':'虚构章节','paragraphs':[{'text':'虚构的原始发言','citations':[{'unit_id':u['unit_id'],'quote':'虚构的原始发言'}]}]}
+            return {'output':out,'metadata':{}}
+        asyncio.run(editor_jobs.process_one(self.store,fake))
+        before=self.client.get('/api/life/guest/book',headers=self.h).json()
+        self.assertEqual(before['chapters'],[])
+        v=chapters.detail(self.store,c['id'])['versions'][0]
+        chapters.confirm(self.store,c['id'],v['id'],0,1)
+        r=self.client.get('/api/life/guest/book',headers=self.h)
+        self.assertEqual(len(r.json()['chapters']),1)
+        self.assertNotIn('sources',r.json()['chapters'][0])
+        self.assertNotIn('metadata',r.json()['chapters'][0])
+        self.assertNotIn('编辑私有约定',r.text)
+
     def test_normal_history_requires_membership(self):
         self.assertEqual(self.client.get('/api/life/profiles/'+self.a['id']+'/history',headers=self.owner).status_code,200)
         self.client.post('/api/auth/logout',headers=self.owner)

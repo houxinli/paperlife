@@ -64,9 +64,9 @@ class VoiceExitTests(unittest.IsolatedAsyncioTestCase):
         turns = self.store.turns(self.session['id'])
         self.assertEqual([t['text'] for t in turns], [text, '虚构收尾'])
         with self.store.db() as db:
-            jobs = db.execute('SELECT snapshot FROM processing_jobs WHERE session=?', (self.session['id'],)).fetchall()
+            jobs = db.execute("SELECT snapshot FROM writing_jobs WHERE json_extract(snapshot,'$.sources[0].id')=?", (self.session['id'],)).fetchall()
         self.assertEqual(len(jobs), 1)
-        self.assertEqual(json.loads(jobs[0]['snapshot'])[0]['text'], text)
+        self.assertEqual(json.loads(jobs[0]['snapshot'])['materials'][0]['text'], text)
 
     async def test_provider_exit_signal_ends_without_lexical_match(self):
         remote, client = await self.run_stream([

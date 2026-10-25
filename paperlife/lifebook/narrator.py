@@ -14,7 +14,16 @@ def install_narrator(router,store,current_user,profile_access,guest_access):
         with store.db() as db:
             ids=[r['id'] for r in db.execute("SELECT id FROM items WHERE profile=? AND status='confirmed' AND kind IN ('fact','person','event','story') ORDER BY created_at,id",(profile,))]
             pending=db.execute("SELECT count(*) FROM items WHERE profile=? AND status='draft'",(profile,)).fetchone()[0]
-        return {'items':[store.item(i) for i in ids],'pending_count':pending}
+        from .chapters import published
+        with store.db() as db:
+            pending += db.execute("SELECT count(*) FROM chapter_versions v JOIN chapters c ON c.id=v.chapter WHERE c.profile=? AND v.status='draft'",(profile,)).fetchone()[0]
+        items=[]
+        for ident in ids:
+            item=store.item(ident)
+            item.pop('source_snapshot',None);item.pop('generation_metadata',None)
+            items.append(item)
+        allowed=('id','chapter','number','title','body','evidence','status','confirmed_at','stale')
+        return {'items':items,'pending_count':pending,'chapters':[{k:v[k] for k in allowed} for v in published(store,profile)]}
 
     def owned_session(ident,profile):
         session=store.session(ident)

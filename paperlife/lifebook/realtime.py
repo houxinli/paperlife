@@ -236,7 +236,7 @@ async def interview(client, store, session, profile, authorize=None):
         save('user')
         save('assistant')
         store.finish_session(sid,status)
-        from .processing import enqueue
+        from .editor_jobs import enqueue_session as enqueue
         enqueue(store,sid)
         with suppress(Exception):
             await client.send_json({'type':'voice_diagnostic',**diagnostics})

@@ -139,9 +139,12 @@ async def process_one(store,generator=None):
 
 
 async def worker(store):
+    from .editor_jobs import enqueue_missing as new_missing, process_one as process_editor
     while True:
         try:
-            enqueue_missing(store)
+            new_missing(store)
+            await process_editor(store)
+            # 升级前已排队的任务继续恢复，不重写任何历史成果。
             await process_one(store)
         except asyncio.CancelledError:raise
         except Exception:pass  # 单个任务失败不能停止后续采集；状态通过jobs接口可见。
@@ -158,4 +161,5 @@ def recover_interrupted(store):
     # 当前生产部署为单进程；启动前不存在可继续使用的旧WebSocket/ticket。
     with store.db() as db:
         db.execute("UPDATE sessions SET status='interrupted' WHERE status IN ('active','connecting')")
-    enqueue_missing(store)
+    from .editor_jobs import enqueue_missing as new_missing
+    new_missing(store)

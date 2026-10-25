@@ -40,10 +40,12 @@ class Store:
             if 'lease_token' not in {r['name'] for r in db.execute('PRAGMA table_info(processing_jobs)')}:
                 db.execute("ALTER TABLE processing_jobs ADD COLUMN lease_token TEXT DEFAULT ''")
             columns={r['name'] for r in db.execute('PRAGMA table_info(items)')}
-            for name, definition in [('evidence',"TEXT DEFAULT '[]'"),('generated_job',"TEXT DEFAULT ''"),('input_hash',"TEXT DEFAULT ''"),('model',"TEXT DEFAULT ''")]:
+            for name, definition in [('evidence',"TEXT DEFAULT '[]'"),('generated_job',"TEXT DEFAULT ''"),('input_hash',"TEXT DEFAULT ''"),('model',"TEXT DEFAULT ''"),('generation_metadata',"TEXT DEFAULT '{}'"),('source_snapshot',"TEXT DEFAULT '[]'")]:
                 if name not in columns:db.execute(f'ALTER TABLE items ADD COLUMN {name} {definition}')
             # 已有档案在升级时冻结当前背景，之后编辑不会改写这个来源快照。
             db.execute("INSERT INTO sources(id,profile,title,text) SELECT lower(hex(randomblob(16))),p.id,'导入的原始访谈',p.context FROM profiles p WHERE p.context!='' AND NOT EXISTS(SELECT 1 FROM sources s WHERE s.profile=p.id)")
+            from .chapters import migrate
+            migrate(db)
 
     @contextmanager
     def db(self):
@@ -188,7 +190,12 @@ class Store:
         with self.db() as db:
             row=db.execute('SELECT * FROM items WHERE id=?',(ident,)).fetchone()
             if not row:return None
-            result=dict(row);result['source_ids']=json.loads(result['source_ids']);result['evidence']=json.loads(result.get('evidence') or '[]');return result
+            result=dict(row)
+            for key, fallback in [('source_ids','[]'),('evidence','[]'),('generation_metadata','{}'),('source_snapshot','[]')]:
+                result[key]=json.loads(result.get(key) or fallback)
+            from .materials import item_stale
+            result['stale']=item_stale(self,result,db)
+            return result
 
     def add_item(self, profile, data):
         ident=uuid.uuid4().hex

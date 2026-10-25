@@ -78,8 +78,8 @@ class ProcessingTests(unittest.IsolatedAsyncioTestCase):
    store.add_turn(s['id'],'user',original,0);store.finish_session(s['id'],'ended')
    self.assertEqual(store.turns(s['id'])[0]['text'],original)
    recover_interrupted(store)
-   with store.db() as db:job=dict(db.execute('SELECT * FROM processing_jobs').fetchone())
-   result=''.join(t['text'] for group in chunks(json.loads(job['snapshot'])) for t in group)
+   with store.db() as db:job=dict(db.execute('SELECT * FROM writing_jobs').fetchone())
+   result=''.join(t['text'] for t in json.loads(job['snapshot'])['materials'])
    self.assertEqual(result,original)
 
 class ModelJsonTests(unittest.TestCase):
