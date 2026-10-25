@@ -1,6 +1,7 @@
 import {VoiceCall} from './audio.js';
 import {createNarrator} from './narrator.js';
 import {createBook} from './book.js';
+import {createChapters} from './chapters.js';
 import {resolveNarratorEntry} from './entry.js';
 const BASE=location.pathname.split('/life')[0];
 const $=id=>document.getElementById(id);
@@ -49,6 +50,7 @@ async function refresh(){
   if(profiles.length)await selectProfile();else{setView('read');$('profile-work').hidden=true;note('先新建一份人生档案，就可以添加聊天背景。');}
 }
 async function selectProfile(){
+  chapters.clear();
   const epoch=++selectionEpoch;const selected=$('profiles').value;
   $('profile-work').hidden=true;$('profiles').disabled=true;
   try{
@@ -61,7 +63,7 @@ async function selectProfile(){
   for(const id of ['profile-name','context','save-profile','voice-dialect'])$(id).disabled=profile.role==='reader';
   $('start').disabled=!provider.configured||profile.role==='reader';
   note(!provider.configured?'实时语音尚未配置。管理员在下方填写豆包凭据后即可开始。':'');
-  await history();await book.load();await loadPreferences();if(profile.role==='owner'){await members();await narratorLinks();}
+  await history();await book.load();await chapters.load();await loadPreferences();if(profile.role==='owner'){await members();await narratorLinks();}
   if(epoch===selectionEpoch)$('profile-work').hidden=false;
   }finally{if(epoch===selectionEpoch)$('profiles').disabled=false;}
 }
@@ -140,6 +142,7 @@ async function listen(track,seek=0){
 $('listen-user').onclick=action(()=>listen('user'));$('listen-ai').onclick=action(()=>listen('assistant'));
 $('export').onclick=()=>{const text=`${$('edit-title').value}\n\n${$('edit-text').value}\n\n原始转写\n${$('raw').textContent}`;const url=URL.createObjectURL(new Blob([text],{type:'text/plain;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download='人生之书-'+editing.id+'.txt';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
 const book=createBook({api,profile:()=>profile,openSession:openEditor,note});
+const chapters=createChapters({api,profile:()=>profile,openSession:openEditor,note,canConfigure:()=>!!provider?.can_configure});
 const narrator=createNarrator({api,profile:()=>profile,isGuest:()=>guestMode,note,fetchAudio:async path=>{
   if(call)throw Error('结束当前聊天后，再回听录音。现在可以继续看文字。');
   const response=await fetch(BASE+'/api'+path,{credentials:'same-origin',headers:{...(guestMode?{'X-Life-Link':guestToken}:{}),...(token?{Authorization:'Bearer '+token}:{})}});

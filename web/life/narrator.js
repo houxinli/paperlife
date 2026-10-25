@@ -37,7 +37,14 @@ export function createNarrator({api,profile,isGuest,fetchAudio,note}){
     if(!profile())return;const id=profile().id;const data=await api(base()+'/book');if(profile().id!==id)return;
     const root=$('my-book-content');root.replaceChildren();
     $('my-book-status').textContent=data.pending_count?`还有 ${data.pending_count} 条内容等家人校对，确认后会放到这里。`:'这里保存家人校对确认后的内容。';
-    if(!data.items.length){root.append(el('p','您的故事正在慢慢成书。聊完以后，家人会帮忙整理。','book-empty'));return;}
+    if(!data.items.length&&!data.chapters?.length){root.append(el('p','您的故事正在慢慢成书。聊完以后，可以和获授权的家人一起整理。','book-empty'));return;}
+    for(const chapter of data.chapters||[]){
+      const article=el('article','','book-card');article.append(el('h3',chapter.title),el('small',`已确认 · 第 ${chapter.number} 版`),el('p',chapter.body,'book-body'));
+      if(chapter.stale)article.append(el('p','来源有新的校订。这是已确认版本，后续修订确认后才会更新。','muted'));
+      const refs=el('details');refs.append(el('summary','这一章的来源'));
+      for(const e of chapter.evidence||[]){refs.append(el('p',`${e.revision?'校订版本 '+e.revision:'原始记录'}：“${e.quote}”`));if(e.session_id)refs.append(button(e.seconds==null?'回看原始聊天（无法逐句定位）':'回看原始聊天',()=>openSession(e.session_id,Math.max(0,(e.seconds||0)-2))));}
+      article.append(refs);root.append(article);
+    }
     const labels={fact:'生活片段',person:'故事里的人',event:'人生时间线',story:'故事篇章'};
     for(const group of ['person','event','fact','story']){
       const items=data.items.filter(i=>i.kind===group);if(!items.length)continue;
@@ -46,7 +53,7 @@ export function createNarrator({api,profile,isGuest,fetchAudio,note}){
         const meta=[item.time_text,item.people,item.place].filter(Boolean).join(' · ');if(meta)article.append(el('p',meta,'muted'));
         article.append(el('p',item.body,'book-body'));
         if(item.evidence?.length){const refs=el('details');refs.append(el('summary','这段内容从哪里来'));
-          for(const e of item.evidence){refs.append(el('p',`原话：“${e.quote}”`),button('看看这次聊天',()=>openSession(e.session_id,Math.max(0,e.seconds-2))));}article.append(refs);}
+          for(const e of item.evidence){refs.append(el('p',`${e.revision?'校订文字':'原始记录'}：“${e.quote}”`));if(e.session_id)refs.append(button('看看这次聊天',()=>openSession(e.session_id,Math.max(0,(e.seconds||0)-2))));}article.append(refs);}
         section.append(article);
       }root.append(section);
     }

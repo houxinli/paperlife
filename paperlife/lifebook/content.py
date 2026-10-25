@@ -93,22 +93,22 @@ def install_content(router,store,current_user,profile_access):
 
     @router.get('/profiles/{ident}/processing')
     def processing_status(ident:str,user=Depends(current_user)):
-        profile_access(ident,user)
+        profile_access(ident,user,edit=True)
         with store.db() as db:
-            return [dict(r) for r in db.execute('SELECT session,status,attempts,progress,total,error,created_at,completed_at FROM processing_jobs WHERE profile=? ORDER BY created_at DESC',(ident,))]
+            old=[dict(r) for r in db.execute('SELECT session,status,attempts,progress,total,error,created_at,completed_at FROM processing_jobs WHERE profile=? ORDER BY created_at DESC',(ident,))]
+            new=[dict(r) for r in db.execute("SELECT json_extract(snapshot,'$.sources[0].id') session,status,attempts,CASE WHEN status='completed' THEN 1 ELSE 0 END progress,1 total,error,created_at,completed_at FROM writing_jobs WHERE profile=? AND kind='material' ORDER BY created_at DESC",(ident,))]
+            return sorted(old+new,key=lambda r:r['created_at'],reverse=True)
 
     @router.post('/sessions/{ident}/process')
     def start_processing(ident:str,user=Depends(current_user)):
-        from .processing import enqueue
+        from .editor_jobs import enqueue_session, retry
         session=store.session(ident)
         if not session:raise HTTPException(404,'采访不存在')
         profile_access(session['profile'],user,edit=True)
         if session['status'] not in ('ended','interrupted'):
             raise HTTPException(409,'请先结束采访')
-        job=enqueue(store,ident)
+        job=enqueue_session(store,ident)
         if not job:raise HTTPException(422,'没有可整理的讲述转写')
         if job['status']=='failed':
-            with store.db() as db:
-                db.execute("UPDATE processing_jobs SET status='pending',attempts=0,next_run=0,error='' WHERE session=? AND status='failed'",(ident,))
-            return {**job,'status':'pending'}
+            return retry(store,job['id'])
         return job

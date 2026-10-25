@@ -224,12 +224,16 @@ def build_router(database_path: Path, current_user, account_authorized=None):
 
     @router.put('/sessions/{ident}')
     def edit_session(ident: str, data: EditInput, user=Depends(current_user)):
-        session_access(ident,user,edit=True)
-        with store.db() as db:
-            result = db.execute('UPDATE sessions SET title=?,edited_text=?,version=version+1 WHERE id=? AND version=?', (data.title,data.edited_text,ident,data.version))
-            if not result.rowcount:
-                raise HTTPException(409, '内容已有更新，请重新打开再校对')
-            db.execute('INSERT INTO revisions(session,version,text,editor) VALUES(?,?,?,?)', (ident,data.version+1,data.edited_text,user.id))
+        s = session_access(ident,user,edit=True)
+        from .materials import revise, ConflictError, MaterialError
+        from .editor_jobs import enqueue_session
+        try:
+            revise(store,s['profile'],'session',ident,data.edited_text,data.version,user.id,title=data.title)
+        except ConflictError as error:
+            raise HTTPException(409,str(error)) from None
+        except MaterialError as error:
+            raise HTTPException(422,str(error)) from None
+        enqueue_session(store,ident)
         return session(ident,user)
 
     @router.get('/sessions/{ident}/audio')
@@ -297,4 +301,6 @@ def build_router(database_path: Path, current_user, account_authorized=None):
     install_content(router,store,current_user,profile_access)
     from .narrator import install_narrator
     install_narrator(router,store,current_user,profile_access,guest_access)
+    from .chapter_api import install_chapters
+    install_chapters(router,store,current_user,profile_access)
     return router

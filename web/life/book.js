@@ -37,8 +37,11 @@ export function createBook({api,profile,openSession,note}){
       card.append(el('p',i.body,'book-body'));if(i.answer)card.append(el('p','家人补充：'+i.answer,'book-answer'));
       const refs=el('div','','source-links');for(const id of i.source_ids){const s=sources.find(s=>s.id===id);const session=sessions.find(s=>s.id===id);if(s)refs.append(click('原文：'+s.title,()=>showSource(s.title,s.text)));if(session)refs.append(click('回听：'+session.title,()=>openSession(id)));}card.append(refs);
       for(const evidence of i.evidence||[]){
-        const source=el('div','','evidence');source.append(el('p',`原始转写 #${evidence.turn_id}${evidence.paragraph?' · 故事第'+evidence.paragraph+'段':''}：“${evidence.quote}”`));
-        source.append(click(`回听约 ${Math.floor(evidence.seconds)} 秒处`,()=>openSession(evidence.session_id,Math.max(0,evidence.seconds-2))));card.append(source);
+        const source=el('div','','evidence');const label=evidence.revision?`人工校订版本 ${evidence.revision}`:evidence.source_kind==='source'?'导入原文':`原始转写 #${evidence.turn_id}`;
+        source.append(el('p',`${label}${evidence.paragraph?' · 故事第'+evidence.paragraph+'段':''}：“${evidence.quote}”`));
+        if(evidence.session_id)source.append(click(evidence.seconds==null?'回听原声（校订稿无法逐句定位）':`回听约 ${Math.floor(evidence.seconds)} 秒处`,()=>openSession(evidence.session_id,Math.max(0,(evidence.seconds||0)-2))));
+        const snap=(i.source_snapshot||[]).find(s=>s.unit_id===evidence.unit_id);if(snap)source.append(click('查看生成时的素材版本',()=>showSource(`${snap.title} · 版本 ${snap.revision}`,snap.text)));
+        card.append(source);
       }
       if(i.generated_job)card.append(el('small','AI生成 · '+i.model+' · 来源已定位，内容仍需人工核实'));
       if(profile().role!=='reader')card.append(click(i.kind==='question'?'回答／补充':'编辑',()=>edit(i)));
@@ -69,6 +72,7 @@ export function createBook({api,profile,openSession,note}){
   document.querySelectorAll('[data-layer]').forEach(b=>b.onclick=()=>{layer=b.dataset.layer;render();});
   document.querySelectorAll('[data-new]').forEach(b=>b.onclick=()=>newItem(b.dataset.new));
   async function jobs(){
+    if(profile().role==='reader'){$('processing-status').replaceChildren();return;}
     const id=profile().id;const jobs=await api(`/life/profiles/${id}/processing`);if(profile().id!==id)return;
     $('processing-status').replaceChildren();
     for(const j of jobs.slice(0,8)){

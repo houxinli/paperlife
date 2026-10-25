@@ -18,3 +18,5 @@ private/
 *.key
 provider.json
 .DS_Store
+
+.superpowers/
