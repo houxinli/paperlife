@@ -3,6 +3,7 @@ import {createNarrator} from './narrator.js';
 import {createBook} from './book.js';
 import {createChapters} from './chapters.js';
 import {createListening} from './listening.js';
+import {createPlaybackGuard} from './playback.js';
 import {resolveNarratorEntry} from './entry.js';
 const BASE=location.pathname.split('/life')[0];
 const $=id=>document.getElementById(id);
@@ -22,6 +23,8 @@ let view=params.get('view')==='read'?'read':params.get('view')==='book'?'book':'
 document.body.classList.toggle('simple',guestMode||view!=='read');
 let token='';try{token=localStorage.getItem('paperlife_session_token')||'';}catch{}
 const note=text=>{$('notice').textContent=text;};
+const playback=createPlaybackGuard({isRecording:()=>!!call||listening.active,getPlayers:()=>document.querySelectorAll('audio')});
+document.addEventListener('play',playback.onPlay,true);
 async function api(path,method='GET',body){
   const response=await fetch(BASE+'/api'+path,{method,credentials:'same-origin',headers:{...(guestMode?{'X-Life-Link':guestToken}:{}),...(token?{Authorization:'Bearer '+token}:{}),...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify(body):undefined});
   if(!response.ok){const data=await response.json().catch(()=>({}));throw Error(typeof data.detail==='string'?data.detail:`请求失败（${response.status}）`);}
@@ -109,7 +112,7 @@ function onEvent(e){
 }
 $('start').onclick=action(async()=>{
   if(listening.active)throw Error('请先结束旁听录音，再开始 AI 对话。');
-  document.querySelectorAll('audio').forEach(audio=>audio.pause());
+  playback.invalidate();
   if(call)return;setView('talk');note('');busy(true);$('transcript').replaceChildren();delete liveRows.user;delete liveRows.assistant;
   $('call-state').textContent='正在打开麦克风…';$('live-caption').textContent='如果手机询问，请点“允许使用麦克风”。';
   const current=new VoiceCall(onEvent);call=current;
@@ -127,6 +130,7 @@ $('family-view').onclick=()=>setView('read');
 window.addEventListener('pagehide',()=>call?.dispose());
 document.addEventListener('visibilitychange',()=>{if(document.hidden&&call){call.stop();note('页面切到后台，聊天已结束；回来后可继续。');}});
 async function openEditor(id,seekSeconds=null){
+  playback.invalidate();
   const profileId=profile.id;const next=await api('/life/sessions/'+id);if(profile.id!==profileId)return;
   if(next.mode==='listening'){await listening.openSession(id,seekSeconds||0);return;}
   editing=next;$('edit-title').value=editing.title;
@@ -140,25 +144,36 @@ async function openEditor(id,seekSeconds=null){
   if(seekSeconds!==null){try{await listen('user',seekSeconds);}catch(e){note(e.message);}}
 }
 $('close-editor').onclick=()=>$('editor').close();
-$('editor').addEventListener('close',()=>{$('audio').pause();if(audioUrl)URL.revokeObjectURL(audioUrl);audioUrl=null;});
+$('editor').addEventListener('close',()=>{playback.invalidate();$('audio').pause();if(audioUrl)URL.revokeObjectURL(audioUrl);audioUrl=null;});
 $('edit-form').onsubmit=action(async()=>{editing=await api('/life/sessions/'+editing.id,'PUT',{title:$('edit-title').value,edited_text:$('edit-text').value,version:editing.version});$('editor-meta').textContent=`校对版本 ${editing.version} 已保存；原始转写不变。`;await history();});
 async function listen(track,seek=0){
-  const response=await fetch(`${BASE}/api/life/sessions/${editing.id}/audio?track=${track}`,{credentials:'same-origin',headers:token?{Authorization:'Bearer '+token}:{}});
-  if(!response.ok)throw Error('这次聊天没有可回听的音频。');if(audioUrl)URL.revokeObjectURL(audioUrl);audioUrl=URL.createObjectURL(await response.blob());const ready=new Promise((resolve,reject)=>{$('audio').onloadedmetadata=resolve;$('audio').onerror=()=>reject(Error('音频加载失败'));});$('audio').src=audioUrl;$('audio').hidden=false;await ready;$('audio').currentTime=seek;await $('audio').play();
+  const ticket=playback.capture(),sid=editing.id,pid=profile.id;
+  playback.assert(ticket);
+  const data=await authorizedAudio(`/life/sessions/${sid}/audio?track=${track}`);
+  playback.assert(ticket);
+  if(editing?.id!==sid||profile?.id!==pid||!$('editor').open)throw Error('回听窗口已关闭。');
+  if(audioUrl)URL.revokeObjectURL(audioUrl);audioUrl=URL.createObjectURL(data);
+  const ready=new Promise((resolve,reject)=>{$('audio').onloadedmetadata=resolve;$('audio').onerror=()=>reject(Error('音频加载失败'));});
+  $('audio').src=audioUrl;$('audio').hidden=false;await ready;
+  playback.assert(ticket);
+  if(editing?.id!==sid||profile?.id!==pid||!$('editor').open)throw Error('回听窗口已关闭。');
+  $('audio').currentTime=seek;await playback.play($('audio'),ticket);
 }
 $('listen-user').onclick=action(()=>listen('user'));$('listen-ai').onclick=action(()=>listen('assistant'));
 $('export').onclick=()=>{const text=`${$('edit-title').value}\n\n${$('edit-text').value}\n\n原始转写\n${$('raw').textContent}`;const url=URL.createObjectURL(new Blob([text],{type:'text/plain;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download='人生之书-'+editing.id+'.txt';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
 const book=createBook({api,profile:()=>profile,openSession:openEditor,note});
 const chapters=createChapters({api,profile:()=>profile,openSession:openEditor,note,canConfigure:()=>!!provider?.can_configure});
 async function authorizedAudio(path){
+  const ticket=playback.capture(),pid=profile?.id;
   if(call||listening.active)throw Error('结束当前录音后，再回听原声。现在可以继续看文字。');
   const response=await fetch(BASE+'/api'+path,{credentials:'same-origin',headers:{...(guestMode?{'X-Life-Link':guestToken}:{}),...(token?{Authorization:'Bearer '+token}:{})}});
-  if(!response.ok)throw Error('这段录音暂时无法播放。');return response.blob();
+  if(!response.ok)throw Error('这段录音暂时无法播放。');const data=await response.blob();
+  playback.assert(ticket);if(profile?.id!==pid)throw Error('已切换人物，回听取消。');return data;
 }
-const listening=createListening({api,profile:()=>profile,isGuest:()=>guestMode,note,fetchAudio:authorizedAudio,canConfigure:()=>!!provider?.can_configure,
+const listening=createListening({api,profile:()=>profile,isGuest:()=>guestMode,note,fetchAudio:authorizedAudio,playback,canConfigure:()=>!!provider?.can_configure,
   canStart:()=>!call,
   onBusy:value=>{
-    if(value)document.querySelectorAll('audio').forEach(audio=>audio.pause());
+    if(value)playback.invalidate();
     for(const id of ['profiles','new-profile','topic','save-profile','talk-view','read-view','family-view'])$(id).disabled=value||!!call;
     $('start').disabled=value||!provider?.configured||profile?.role==='reader';
     $('narrator-actions').hidden=value||view!=='talk';
@@ -166,7 +181,7 @@ const listening=createListening({api,profile:()=>profile,isGuest:()=>guestMode,n
   },
   onSaved:async()=>{await narrator.history();if(!guestMode){await history();await book.load();await chapters.load();}}
 });
-const narrator=createNarrator({api,profile:()=>profile,isGuest:()=>guestMode,note,fetchAudio:authorizedAudio,openListening:(id,seconds)=>listening.openSession(id,seconds)});
+const narrator=createNarrator({api,profile:()=>profile,isGuest:()=>guestMode,note,fetchAudio:authorizedAudio,playback,openListening:(id,seconds)=>listening.openSession(id,seconds)});
 async function refreshNames(){
   if(!profile)return;const id=profile.id;const updated=await api(guestMode?'/life/guest':`/life/profiles/${id}`);if(profile.id!==id)return;
   profile.interviewer_name=updated.interviewer_name;profile.narrator_name=updated.narrator_name;

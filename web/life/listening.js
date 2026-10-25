@@ -1,6 +1,6 @@
 import {ListeningCall} from './listening-audio.js';
 
-export function createListening({api,profile,isGuest=()=>false,note=()=>{},fetchAudio,onSaved=()=>{},canConfigure=()=>false,canStart=()=>true,onBusy=()=>{}}){
+export function createListening({api,profile,isGuest=()=>false,note=()=>{},fetchAudio,playback,onSaved=()=>{},canConfigure=()=>false,canStart=()=>true,onBusy=()=>{}}){
   const root=document.getElementById('listening-workspace'),review=document.getElementById('listening-review'),settings=document.getElementById('listening-settings');
   let epoch=0,reviewEpoch=0,initialSeek=0,loadedProfile=null,call=null,recording=false,config=null,audio=null,audioUrl=null,participantCounter=0;
   const el=(tag,text='',id)=>{const n=document.createElement(tag);n.textContent=text;if(id)n.id=id;return n;};
@@ -142,10 +142,11 @@ export function createListening({api,profile,isGuest=()=>false,note=()=>{},fetch
       row.append(button(`回听 ${formatTime(s.start_ms)} 原声`,async()=>{
         if(!current())return;if(recording||!canStart()){status(message,'请先结束正在进行的录音或聊天。');return;}
         try{
+          const playbackTicket=playback?.capture();
           const path=c.guest?`/life/guest/history/${enc(session.id)}/audio?track=user`:`/life/sessions/${enc(session.id)}/audio?track=user`;
-          const blob=await fetchAudio(path);if(!current())return;
+          const blob=await fetchAudio(path);if(!current()||recording||!canStart())return;playback?.assert(playbackTicket);
           releaseAudio();audio=player;audioUrl=typeof blob==='string'?blob:URL.createObjectURL(blob);player.src=audioUrl;player.hidden=false;
-          const play=async()=>{if(!current())return;player.currentTime=Math.max(0,(s.start_ms||0)/1000);try{await player.play();}catch(error){if(current())status(message,'请点击音频控件播放：'+error.message);}};
+          const play=async()=>{if(!current()||recording||!canStart())return;player.currentTime=Math.max(0,(s.start_ms||0)/1000);try{if(playback)await playback.play(player,playbackTicket);else await player.play();}catch(error){if(current())status(message,error.message);}};
           player.onloadedmetadata=play;player.load?.();
         }catch(error){if(current())status(message,error.message);}
       }));

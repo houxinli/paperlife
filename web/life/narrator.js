@@ -1,5 +1,5 @@
 /* 讲述者自己的只读历史与已确认成果；不复用家人的编辑表单。 */
-export function createNarrator({api,profile,isGuest,fetchAudio,note,openListening}){
+export function createNarrator({api,profile,isGuest,fetchAudio,note,openListening,playback}){
   const $=id=>document.getElementById(id);
   let offset=0,epoch=0,detailEpoch=0,audioUrl=null;
   const el=(tag,text,cls)=>{const n=document.createElement(tag);if(text)n.textContent=text;if(cls)n.className=cls;return n;};
@@ -25,11 +25,12 @@ export function createNarrator({api,profile,isGuest,fetchAudio,note,openListenin
     for(const t of s.turns){const row=el('div','',`turn ${t.role}`);row.append(el('b',t.role==='user'?(profile().narrator_name||profile().name):(profile().interviewer_name||'拾光')+' · AI'),el('p',t.text));$('past-turns').append(row);}
     $('past-audio').pause();$('past-audio').hidden=true;
     $('past-play').onclick=async()=>{try{
+      const playbackTicket=playback?.capture();
       const data=await fetchAudio(detailPath(id)+'/audio?track=user');
       if(currentProfile!==profile()?.id||generation!==detailEpoch)return;
       if(audioUrl)URL.revokeObjectURL(audioUrl);audioUrl=URL.createObjectURL(data);
       const player=$('past-audio');player.src=audioUrl;player.hidden=false;
-      player.onloadedmetadata=()=>{player.currentTime=Math.max(0,seconds);};await player.play();
+      player.onloadedmetadata=()=>{player.currentTime=Math.max(0,seconds);};if(playback)await playback.play(player,playbackTicket);else await player.play();
     }catch(e){note(e.message);}};
     // 弹窗阅读不更改当前聊天状态；音轨播放明确由用户点选。
     $('past-session').showModal();
