@@ -51,6 +51,20 @@ class RecordingClient:
 
 
 class RealtimeRoundsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_listening_other_speakers_are_not_reused_as_protagonist_dialogue_memory(self):
+        from paperlife.lifebook.prompt import session_config
+        remote=ScriptedProvider([]);client=RecordingClient()
+        with tempfile.TemporaryDirectory() as directory:
+            store=Store(Path(directory));store.configure({'api_key':'fictional'})
+            p=store.create_profile(1,'虚构主体','')
+            prior=store.create_session(p['id'],1,'虚构旁听')
+            store.add_turn(prior['id'],'user','他人说自己曾住在虚构远方。',0)
+            with store.db() as db:db.execute("UPDATE sessions SET mode='listening',created_at='2020-01-01' WHERE id=?",(prior['id'],))
+            current=store.create_session(p['id'],1,'虚构新对话')
+            with patch('paperlife.lifebook.realtime.connect',return_value=remote),patch('paperlife.lifebook.realtime.session_config',wraps=session_config) as config:
+                await asyncio.wait_for(interview(client,store,current,p),2)
+            self.assertNotIn('虚构远方',config.call_args.args[2])
+
     async def test_interim_transcript_is_archived_but_never_learned_as_preference(self):
         text='不要问父母'
         remote=ScriptedProvider([(450,{'question_id':'q1'}),

@@ -69,7 +69,8 @@ export function createChapters({api,profile,openSession,note,canConfigure=()=>fa
     const options=el('div','','chapter-materials');
     for(const m of materials){
       const row=el('div','','chapter-material');const label=el('label');const check=el('input');check.type='checkbox';
-      label.append(check,el('span',`${m.kind==='session'?'聊天':'导入'}：${m.title} · 素材版本 ${m.revision} · ${m.chars} 字`));
+      label.append(check,el('span',`${m.mode==='listening'?'旁听':m.kind==='session'?'聊天':'导入'}：${m.title} · 素材版本 ${m.revision} · ${m.chars} 字${m.identity_confirmation_required?' · 请先核对主体声音':''}`));
+      check.disabled=!!m.identity_confirmation_required;
       sourceInputs.push({input:check,material:m});
       row.append(label,button('校订：'+m.title,()=>editMaterial(m,c),c));options.append(row);
     }
@@ -98,6 +99,7 @@ export function createChapters({api,profile,openSession,note,canConfigure=()=>fa
     creation.append(form);
   }
   async function editMaterial(material,c){
+    if(material.mode==='listening'){await openSession(material.id);return;}
     const request=++materialEpoch;
     const path=profilePath(c)+`/materials/${pathId(material.kind)}/${pathId(material.id)}`;
     const data=await api(path);if(!valid(c)||request!==materialEpoch)return;
@@ -218,10 +220,11 @@ export function createChapters({api,profile,openSession,note,canConfigure=()=>fa
     for(const citation of evidence){
       const source={...sources.find(s=>s.unit_id===citation.unit_id),...citation};
       const row=el('div','','evidence');
+      if(source.speaker)row.append(el('p',`${source.speaker.confirmed?source.speaker.name:'身份未确认'}${source.speaker.relationship?' · '+source.speaker.relationship:''}${source.speaker.is_subject?' · 档案主体':' · 其他或未知说话者'}`,'muted'));
       row.append(el('small',`${source.title||'素材'} · 素材版本 ${source.revision??'未知'}${source.paragraph?' · 第 '+source.paragraph+' 段':''}`),el('p','“'+(source.quote||'')+'”'));
       if(source.source_kind==='session'&&source.source_id){
         const aligned=Number.isFinite(source.seconds);
-        row.append(el('p',aligned?`原始转写${source.turn_id?' #'+source.turn_id:''} · 约 ${Math.floor(source.seconds)} 秒`:'校订全文引用，无法逐句定位；仅可回听整段录音。','muted'));
+        row.append(el('p',aligned?`${source.segment_id&&source.origin==='human_revision'?'分句校订（对应原声片段）':'原始识别'}${source.turn_id?' #'+source.turn_id:''} · 约 ${Math.floor(source.seconds)} 秒`:'校订全文引用，无法逐句定位；仅可回听整段录音。','muted'));
         row.append(button(aligned?`回听约 ${Math.floor(source.seconds)} 秒处`:'回听整段录音（无逐句定位）',()=>openSession(source.source_id,source.seconds??0),c));
       }else row.append(el('p','导入资料，无录音。','muted'));
       refs.append(row);
@@ -231,6 +234,8 @@ export function createChapters({api,profile,openSession,note,canConfigure=()=>fa
     snapshots.append(el('p','这里保留生成当时的素材版本。后续校订不会覆盖这些依据。','muted'));
     for(const s of sources){
       const snap=el('details');snap.append(el('summary',`${s.title||'素材'} · ${s.source_kind==='session'?'聊天':'导入'} · 版本 ${s.revision}`),el('pre',s.text||''));
+      if(s.speaker)snap.append(el('p',`说话者：${s.speaker.name} · ${s.speaker.is_subject?'档案主体':'其他或未知说话者'}`,'muted'));
+      if(s.original_text!==undefined&&s.original_text!==s.text)snap.append(el('p','初始识别（保留）：'+s.original_text,'muted'));
       if(s.context)snap.append(el('p',typeof s.context==='string'?s.context:JSON.stringify(s.context),'muted'));
       snapshots.append(snap);
     }

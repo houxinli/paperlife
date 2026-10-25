@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 def install_narrator(router,store,current_user,profile_access,guest_access):
     def history(profile,offset,limit):
         with store.db() as db:
-            rows=[dict(r) for r in db.execute('SELECT id,title,status,created_at,version FROM sessions WHERE profile=? ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?', (profile,limit+1,offset))]
+            rows=[dict(r) for r in db.execute('SELECT id,title,status,created_at,version,mode FROM sessions WHERE profile=? ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?', (profile,limit+1,offset))]
         return {'sessions':rows[:limit],'has_more':len(rows)>limit}
 
     def book(profile):
@@ -38,7 +38,7 @@ def install_narrator(router,store,current_user,profile_access,guest_access):
     @router.get('/guest/history/{ident}')
     def guest_session(ident:str,link=Depends(guest_access)):
         session=owned_session(ident,link['profile'])
-        return {k:session[k] for k in ('id','title','status','created_at','edited_text','version')}|{'turns':store.turns(ident)}
+        return {k:session[k] for k in ('id','title','status','created_at','edited_text','version','mode')}|{'turns':store.turns(ident)}
 
     @router.get('/guest/history/{ident}/audio')
     def guest_audio(ident:str,track:Literal['user','assistant']='user',link=Depends(guest_access)):

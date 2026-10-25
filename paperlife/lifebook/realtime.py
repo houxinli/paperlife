@@ -58,7 +58,7 @@ async def interview(client, store, session, profile, authorize=None):
         with suppress(Exception):
             await client.send_json({'type':'ending','reason':reason,'session':sid})
     with store.db() as db:
-        previous = db.execute('SELECT id,edited_text FROM sessions WHERE profile=? AND id!=? ORDER BY created_at DESC LIMIT 1', (profile['id'],sid)).fetchone()
+        previous = db.execute("SELECT id,edited_text FROM sessions WHERE profile=? AND id!=? AND mode='dialogue' ORDER BY created_at DESC LIMIT 1", (profile['id'],sid)).fetchone()
     with store.db() as db:
         resolved=[dict(r) for r in db.execute("SELECT title,answer FROM items WHERE profile=? AND kind='question' AND status='resolved' AND answer!='' ORDER BY created_at DESC LIMIT 15",(profile['id'],))]
     profile={**profile,'_interview_preferences':store.preferences(profile['id']),'context':profile['context']+'\n家人已回答的问题（补充来源，仍可向讲述者核对）：\n'+'\n'.join(r['title']+'：'+r['answer'] for r in resolved)}

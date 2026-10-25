@@ -1,5 +1,5 @@
 /* 讲述者自己的只读历史与已确认成果；不复用家人的编辑表单。 */
-export function createNarrator({api,profile,isGuest,fetchAudio,note}){
+export function createNarrator({api,profile,isGuest,fetchAudio,note,openListening}){
   const $=id=>document.getElementById(id);
   let offset=0,epoch=0,detailEpoch=0,audioUrl=null;
   const el=(tag,text,cls)=>{const n=document.createElement(tag);if(text)n.textContent=text;if(cls)n.className=cls;return n;};
@@ -20,6 +20,7 @@ export function createNarrator({api,profile,isGuest,fetchAudio,note}){
   }
   async function openSession(id,seconds=0){
     const generation=++detailEpoch,currentProfile=profile().id;const s=await api(detailPath(id));if(profile().id!==currentProfile||generation!==detailEpoch)return;
+    if(s.mode==='listening'&&openListening){await openListening(id,seconds);return;}
     $('past-title').textContent=s.title;$('past-turns').replaceChildren();
     for(const t of s.turns){const row=el('div','',`turn ${t.role}`);row.append(el('b',t.role==='user'?(profile().narrator_name||profile().name):(profile().interviewer_name||'拾光')+' · AI'),el('p',t.text));$('past-turns').append(row);}
     $('past-audio').pause();$('past-audio').hidden=true;
@@ -42,7 +43,7 @@ export function createNarrator({api,profile,isGuest,fetchAudio,note}){
       const article=el('article','','book-card');article.append(el('h3',chapter.title),el('small',`已确认 · 第 ${chapter.number} 版`),el('p',chapter.body,'book-body'));
       if(chapter.stale)article.append(el('p','来源有新的校订。这是已确认版本，后续修订确认后才会更新。','muted'));
       const refs=el('details');refs.append(el('summary','这一章的来源'));
-      for(const e of chapter.evidence||[]){refs.append(el('p',`${e.revision?'校订版本 '+e.revision:'原始记录'}：“${e.quote}”`));if(e.session_id)refs.append(button(e.seconds==null?'回看原始聊天（无法逐句定位）':'回看原始聊天',()=>openSession(e.session_id,Math.max(0,(e.seconds||0)-2))));}
+      for(const e of chapter.evidence||[]){refs.append(el('p',`${e.speaker?e.speaker.name+' · ':''}${e.revision?'校订／归属版本 '+e.revision:'原始记录'}：“${e.quote}”`));if(e.session_id)refs.append(button(e.seconds==null?'回看原始聊天（无法逐句定位）':'回看原始聊天',()=>openSession(e.session_id,Math.max(0,(e.seconds||0)-2))));}
       article.append(refs);root.append(article);
     }
     const labels={fact:'生活片段',person:'故事里的人',event:'人生时间线',story:'故事篇章'};
@@ -53,7 +54,7 @@ export function createNarrator({api,profile,isGuest,fetchAudio,note}){
         const meta=[item.time_text,item.people,item.place].filter(Boolean).join(' · ');if(meta)article.append(el('p',meta,'muted'));
         article.append(el('p',item.body,'book-body'));
         if(item.evidence?.length){const refs=el('details');refs.append(el('summary','这段内容从哪里来'));
-          for(const e of item.evidence){refs.append(el('p',`${e.revision?'校订文字':'原始记录'}：“${e.quote}”`));if(e.session_id)refs.append(button('看看这次聊天',()=>openSession(e.session_id,Math.max(0,(e.seconds||0)-2))));}article.append(refs);}
+          for(const e of item.evidence){refs.append(el('p',`${e.speaker?e.speaker.name+' · ':''}${e.revision?'校订／归属版本 '+e.revision:'原始记录'}：“${e.quote}”`));if(e.session_id)refs.append(button('看看这次聊天',()=>openSession(e.session_id,Math.max(0,(e.seconds||0)-2))));}article.append(refs);}
         section.append(article);
       }root.append(section);
     }

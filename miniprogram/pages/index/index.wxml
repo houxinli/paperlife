@@ -61,7 +61,7 @@
           <view class="row"><button class="small" data-track="user" bindtap="playHistory" disabled="{{active || busy}}">回听我的原声</button><button class="small" data-track="assistant" bindtap="playHistory" disabled="{{active || busy}}">回听 AI 提问</button></view>
           <button wx:if="{{playing}}" class="small" bindtap="stopPlayback">停止回听</button>
           <view wx:if="{{active}}" class="muted">聊天时可阅读，结束后可回听原声。</view>
-          <view wx:for="{{detail.turns}}" wx:key="id" class="message {{item.role}}"><view class="muted">{{item.role === 'user' ? narratorName : interviewerName + ' · AI'}}</view><text selectable class="body">{{item.text}}</text></view>
+          <view wx:for="{{detail.turns}}" wx:key="id" class="message {{item.role}}"><view class="muted">{{detail.mode === 'listening' ? '旁听原始识别（声音归属需核对）' : item.role === 'user' ? narratorName : interviewerName + ' · AI'}}</view><text selectable class="body">{{item.text}}</text></view>
         </view>
       </view>
       <view hidden="{{tab !== 'book'}}">

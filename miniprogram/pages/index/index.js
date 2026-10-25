@@ -83,7 +83,7 @@ Page({
     const result=await this.api.request(this.api.base(this.data.profile,scope)+'/book','GET',null,scope);
     if(epoch===this.epoch)this.setData({book:[...(result.items||[]),...(result.chapters||[])].filter(i=>i.status==='confirmed').map(item=>({...item,
       time_text:item.number?`已确认第 ${item.number} 版`:item.time_text,
-      evidence:(item.evidence||[]).map(e=>({...e,source_label:e.revision?`人工校订版本 ${e.revision}`:e.source_kind==='source'?'导入原文':'原始转写',can_open:!!e.session_id}))})),pendingCount:result.pending_count||0});
+      evidence:(item.evidence||[]).map(e=>({...e,source_label:e.segment_id?`${e.speaker?.name||'未知声音'} · ${e.origin==='human_revision'?'分句校订':'原始识别'} · 归属版本 ${e.annotation_revision}`:e.revision?`人工校订版本 ${e.revision}`:e.source_kind==='source'?'导入原文':'原始转写',can_open:!!e.session_id}))})),pendingCount:result.pending_count||0});
   },
   refreshReading(){this.run(()=>Promise.all([this.loadHistory(true),this.loadBook()]));},
   async refreshNames(){

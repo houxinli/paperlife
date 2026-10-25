@@ -46,6 +46,8 @@ class Store:
             db.execute("INSERT INTO sources(id,profile,title,text) SELECT lower(hex(randomblob(16))),p.id,'导入的原始访谈',p.context FROM profiles p WHERE p.context!='' AND NOT EXISTS(SELECT 1 FROM sources s WHERE s.profile=p.id)")
             from .chapters import migrate
             migrate(db)
+            from .listening_store import migrate as migrate_listening
+            migrate_listening(db)
 
     @contextmanager
     def db(self):
@@ -106,7 +108,7 @@ class Store:
         changed = []
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')
-            source = db.execute('SELECT s.profile,t.text FROM turns t JOIN sessions s ON s.id=t.session WHERE t.id=? AND t.session=? AND t.role=?',
+            source = db.execute('SELECT s.profile,t.text FROM turns t JOIN sessions s ON s.id=t.session WHERE t.id=? AND t.session=? AND t.role=? AND s.mode="dialogue"',
                                 (turn_id, session_id, 'user')).fetchone()
             if not source or source['text'] != text:
                 return []
