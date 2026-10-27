@@ -1,4 +1,5 @@
 """章节与素材 HTTP 授权边界；模型配置仅管理员写入。"""
+
 from typing import Literal
 from fastapi import Depends, HTTPException
 from pydantic import BaseModel, Field, ConfigDict
@@ -102,7 +103,10 @@ def install_chapters(router, store, current_user, profile_access):
     def list_chapters(profile: str, user=Depends(current_user)):
         p = profile_access(profile, user)
         drafts = p['role'] != 'reader'
-        return {'chapters': chapters.listing(store, profile, drafts), 'jobs': editor_jobs.jobs(store, profile) if drafts else []}
+        return {
+            'chapters': chapters.listing(store, profile, drafts),
+            'jobs': editor_jobs.jobs(store, profile) if drafts else [],
+        }
 
     @router.post('/profiles/{profile}/chapters')
     def create_chapter(profile: str, data: ChapterInput, user=Depends(current_user)):
@@ -122,8 +126,15 @@ def install_chapters(router, store, current_user, profile_access):
     @router.post('/chapters/{ident}/generate')
     def generate_chapter(ident: str, data: GenerateInput, user=Depends(current_user)):
         c, _ = access(ident, user, edit=True)
-        return guarded(editor_jobs.enqueue_chapter, store, c['profile'], ident,
-                       [s.model_dump() for s in data.sources], user.id, data.brief)
+        return guarded(
+            editor_jobs.enqueue_chapter,
+            store,
+            c['profile'],
+            ident,
+            [s.model_dump() for s in data.sources],
+            user.id,
+            data.brief,
+        )
 
     @router.put('/chapters/{ident}/versions/{vid}')
     def edit_version(ident: str, vid: str, data: VersionInput, user=Depends(current_user)):

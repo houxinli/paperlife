@@ -9,7 +9,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.routing import APIRoute
 
 
-
 class PrivateRoute(APIRoute):
     def get_route_handler(self) -> Callable:
         handler = super().get_route_handler()

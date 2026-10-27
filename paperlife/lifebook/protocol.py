@@ -1,4 +1,5 @@
 """豆包端到端实时语音 v1 二进制帧。"""
+
 import gzip
 import json
 import struct
@@ -19,6 +20,7 @@ def decode(raw):
         raise ValueError('Invalid provider frame')
     kind, flags, serial, compression = raw[1] >> 4, raw[1] & 15, raw[2] >> 4, raw[2] & 15
     offset = (raw[0] & 15) * 4
+
     def integer():
         nonlocal offset
         if offset + 4 > len(raw):
@@ -26,14 +28,16 @@ def decode(raw):
         value = struct.unpack_from('>I', raw, offset)[0]
         offset += 4
         return value
+
     def blob():
         nonlocal offset
         size = integer()
         if offset + size > len(raw):
             raise ValueError('Truncated payload')
-        value = raw[offset:offset+size]
+        value = raw[offset : offset + size]
         offset += size
         return value
+
     if kind == 15:
         code = integer()
         raise ValueError(f'Provider error {code}')
@@ -47,4 +51,4 @@ def decode(raw):
         payload = gzip.decompress(payload)
     elif compression != 0:
         raise ValueError('Unsupported compression')
-    return {'event':event, 'data':json.loads(payload) if serial == 1 and payload else payload}
+    return {'event': event, 'data': json.loads(payload) if serial == 1 and payload else payload}
