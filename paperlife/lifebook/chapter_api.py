@@ -50,12 +50,12 @@ class ModelInput(BaseModel):
     writer: ModelChoice | None = None
 
 
-def install_chapters(router, store, current_user, profile_access):
-    def access(ident, user, edit=False):
+def install_chapters(router, store, current_user, access):
+    def chapter_access(ident, user, edit=False):
         c = chapters.chapter(store, ident)
         if not c:
             raise HTTPException(404, '章节不存在')
-        p = profile_access(c['profile'], user, edit=edit)
+        p = access.profile(c['profile'], user, edit=edit)
         return c, p
 
     def guarded(fn, *args, **kwargs):
@@ -78,19 +78,19 @@ def install_chapters(router, store, current_user, profile_access):
 
     @router.get('/profiles/{profile}/materials')
     def list_materials(profile: str, user=Depends(current_user)):
-        profile_access(profile, user, edit=True)
+        access.profile(profile, user, edit=True)
         return {'materials': materials.list_materials(store, profile)}
 
     @router.get('/profiles/{profile}/materials/{kind}/{ident}')
     def read_material(profile: str, kind: str, ident: str, user=Depends(current_user)):
-        profile_access(profile, user, edit=True)
+        access.profile(profile, user, edit=True)
         result = guarded(materials.material, store, profile, kind, ident)
         result.pop('turns', None)
         return result
 
     @router.put('/profiles/{profile}/materials/{kind}/{ident}')
     def revise_material(profile: str, kind: str, ident: str, data: MaterialInput, user=Depends(current_user)):
-        profile_access(profile, user, edit=True)
+        access.profile(profile, user, edit=True)
         result = guarded(materials.revise, store, profile, kind, ident, data.text, data.version, user.id)
         try:
             editor_jobs.enqueue_material(store, profile, [{'kind': kind, 'id': ident}], user.id)
@@ -101,7 +101,7 @@ def install_chapters(router, store, current_user, profile_access):
 
     @router.get('/profiles/{profile}/chapters')
     def list_chapters(profile: str, user=Depends(current_user)):
-        p = profile_access(profile, user)
+        p = access.profile(profile, user)
         drafts = p['role'] != 'reader'
         return {
             'chapters': chapters.listing(store, profile, drafts),
@@ -110,14 +110,14 @@ def install_chapters(router, store, current_user, profile_access):
 
     @router.post('/profiles/{profile}/chapters')
     def create_chapter(profile: str, data: ChapterInput, user=Depends(current_user)):
-        profile_access(profile, user, edit=True)
+        access.profile(profile, user, edit=True)
         if not data.title.strip():
             raise HTTPException(422, '章节标题不能为空')
         return chapters.create(store, profile, data.title.strip(), data.brief)
 
     @router.get('/chapters/{ident}')
     def get_chapter(ident: str, user=Depends(current_user)):
-        c, p = access(ident, user)
+        c, p = chapter_access(ident, user)
         result = chapters.detail(store, ident, p['role'] != 'reader')
         if not result:
             raise HTTPException(404, '章节尚未确认')
@@ -125,7 +125,7 @@ def install_chapters(router, store, current_user, profile_access):
 
     @router.post('/chapters/{ident}/generate')
     def generate_chapter(ident: str, data: GenerateInput, user=Depends(current_user)):
-        c, _ = access(ident, user, edit=True)
+        c, _ = chapter_access(ident, user, edit=True)
         return guarded(
             editor_jobs.enqueue_chapter,
             store,
@@ -138,19 +138,19 @@ def install_chapters(router, store, current_user, profile_access):
 
     @router.put('/chapters/{ident}/versions/{vid}')
     def edit_version(ident: str, vid: str, data: VersionInput, user=Depends(current_user)):
-        access(ident, user, edit=True)
+        chapter_access(ident, user, edit=True)
         if not data.title.strip() or not data.body.strip():
             raise HTTPException(422, '标题和正文不能为空')
         return guarded(chapters.edit, store, ident, vid, data.title, data.body, data.edit_version)
 
     @router.post('/chapters/{ident}/versions/{vid}/confirm')
     def confirm_version(ident: str, vid: str, data: ConfirmInput, user=Depends(current_user)):
-        access(ident, user, edit=True)
+        chapter_access(ident, user, edit=True)
         return guarded(chapters.confirm, store, ident, vid, data.edit_version, user.id)
 
     @router.get('/profiles/{profile}/writing-jobs')
     def writing_jobs(profile: str, user=Depends(current_user)):
-        profile_access(profile, user, edit=True)
+        access.profile(profile, user, edit=True)
         return {'jobs': editor_jobs.jobs(store, profile)}
 
     @router.post('/writing-jobs/{ident}/retry')
@@ -159,5 +159,5 @@ def install_chapters(router, store, current_user, profile_access):
             job = db.execute('SELECT profile FROM writing_jobs WHERE id=?', (ident,)).fetchone()
         if not job:
             raise HTTPException(404, '任务不存在')
-        profile_access(job['profile'], user, edit=True)
+        access.profile(job['profile'], user, edit=True)
         return editor_jobs.retry(store, ident)

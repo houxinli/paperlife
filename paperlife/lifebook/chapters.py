@@ -6,18 +6,6 @@ import uuid
 from .materials import ConflictError, stale
 
 
-def migrate(db):
-    db.executescript('''
-        CREATE TABLE IF NOT EXISTS material_revisions(source TEXT NOT NULL,version INTEGER NOT NULL,text TEXT NOT NULL,editor INTEGER,created_at TEXT DEFAULT CURRENT_TIMESTAMP,PRIMARY KEY(source,version));
-        CREATE TABLE IF NOT EXISTS chapters(id TEXT PRIMARY KEY,profile TEXT NOT NULL,title TEXT NOT NULL,brief TEXT NOT NULL DEFAULT '',published_version_id TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
-        CREATE TABLE IF NOT EXISTS chapter_versions(id TEXT PRIMARY KEY,chapter TEXT NOT NULL,number INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'draft',edit_version INTEGER NOT NULL DEFAULT 0,title TEXT NOT NULL,body TEXT NOT NULL,paragraphs TEXT NOT NULL,evidence TEXT NOT NULL,sources TEXT NOT NULL,source_refs TEXT NOT NULL,source_hash TEXT NOT NULL,metadata TEXT NOT NULL,base_published_id TEXT,job TEXT UNIQUE,confirmed_by INTEGER,confirmed_at TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(chapter,number));
-        CREATE TABLE IF NOT EXISTS writing_jobs(id TEXT PRIMARY KEY,profile TEXT NOT NULL,chapter TEXT,kind TEXT NOT NULL,requester INTEGER,request_key TEXT UNIQUE NOT NULL,snapshot TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',stage TEXT NOT NULL DEFAULT 'pending',checkpoint TEXT NOT NULL DEFAULT '{}',attempts INTEGER NOT NULL DEFAULT 0,next_run REAL NOT NULL DEFAULT 0,lease_until REAL NOT NULL DEFAULT 0,lease_token TEXT NOT NULL DEFAULT '',error TEXT NOT NULL DEFAULT '',version_id TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,completed_at TEXT);
-        CREATE INDEX IF NOT EXISTS writing_jobs_pending ON writing_jobs(status,next_run);
-        CREATE INDEX IF NOT EXISTS chapters_profile ON chapters(profile);
-        CREATE INDEX IF NOT EXISTS chapter_versions_chapter ON chapter_versions(chapter,number);
-    ''')
-
-
 def chapter(store, ident, db=None):
     if db is not None:
         row = db.execute('SELECT * FROM chapters WHERE id=?', (ident,)).fetchone()

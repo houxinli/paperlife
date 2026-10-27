@@ -12,16 +12,15 @@ from fastapi.testclient import TestClient
 class LifeBookTests(unittest.TestCase):
     def setUp(self):
         from paperlife.lifebook.api import build_router
+        from paperlife.lifebook.store import Store
 
         self.tmp = tempfile.TemporaryDirectory()
-        import sqlite3
 
-        with sqlite3.connect(Path(self.tmp.name) / 'main.db') as db:
-            db.execute('CREATE TABLE users(id INTEGER PRIMARY KEY,is_active INTEGER)')
-            db.executemany('INSERT INTO users VALUES(?,1)', [(1,), (2,)])
         self.user = SimpleNamespace(id=1, role='admin', username='alice')
         self.app = FastAPI()
-        self.app.include_router(build_router(Path(self.tmp.name) / 'main.db', lambda: self.user))
+        self.app.include_router(
+            build_router(Store(Path(self.tmp.name) / 'life'), lambda: self.user, lambda uid: uid in (1, 2))
+        )
         self.client = TestClient(self.app)
 
     def tearDown(self):
@@ -137,7 +136,6 @@ class RealtimeTests(unittest.IsolatedAsyncioTestCase):
         from unittest.mock import patch
         from paperlife.lifebook.store import Store
         from paperlife.lifebook.realtime import interview
-        from paperlife.lifebook.protocol import decode
 
         def frame(event, data, kind=9, serial=1):
             payload = json.dumps(data).encode() if serial else data

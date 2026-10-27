@@ -341,13 +341,13 @@ async def process_one(store, generator=None):
     return True
 
 
-# 只扫描新结束会话；已有旧处理任务视为已导入的历史成果，不重新调用模型。
+# 只扫描新结束会话；旧队列已完成的会话视为历史成果，不重新调用模型。
 def enqueue_missing(store):
     with store.db() as db:
         ids = [
             r['id']
             for r in db.execute(
-                "SELECT s.id FROM sessions s WHERE s.status IN ('ended','interrupted') AND EXISTS(SELECT 1 FROM turns t WHERE t.session=s.id AND t.role='user' AND trim(t.text)!='') AND NOT EXISTS(SELECT 1 FROM processing_jobs p WHERE p.session=s.id) AND NOT EXISTS(SELECT 1 FROM writing_jobs j WHERE j.kind='material' AND j.profile=s.profile AND json_extract(j.snapshot,'$.sources[0].id')=s.id)"
+                "SELECT s.id FROM sessions s WHERE s.status IN ('ended','interrupted') AND EXISTS(SELECT 1 FROM turns t WHERE t.session=s.id AND t.role='user' AND trim(t.text)!='') AND NOT EXISTS(SELECT 1 FROM processing_jobs p WHERE p.session=s.id AND p.status='completed') AND NOT EXISTS(SELECT 1 FROM writing_jobs j WHERE j.kind='material' AND j.profile=s.profile AND json_extract(j.snapshot,'$.sources[0].id')=s.id)"
             )
         ]
     for ident in ids:

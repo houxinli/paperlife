@@ -13,7 +13,6 @@ import uuid
 import httpx
 from websockets.asyncio.client import connect
 
-from .generation import parse_output
 from .protocol import decode, encode
 from .writing_rules import PROMPT_VERSION, prompt_hash, stage_prompt, task_message
 
@@ -185,6 +184,37 @@ def _validate_output(stage, value):
             _text(paragraph.get('text'))
             _citations(paragraph.get('citations'))
     return value
+
+
+def parse_output(text):
+    """只补齐遗漏的尾部容器括号；不修正文、键名、引号或数据。"""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        stack = []
+        quoted = False
+        escaped = False
+        for ch in text:
+            if quoted:
+                if escaped:
+                    escaped = False
+                elif ch == '\\':
+                    escaped = True
+                elif ch == '"':
+                    quoted = False
+                continue
+            if ch == '"':
+                quoted = True
+            elif ch in '{[':
+                stack.append(ch)
+            elif ch in '}]':
+                if not stack or (stack[-1], ch) not in (('{', '}'), ('[', ']')):
+                    raise ValueError('malformed_json_structure')
+                stack.pop()
+        if quoted or not stack or len(stack) > 8:
+            raise ValueError('incomplete_json_data')
+        suffix = ''.join('}' if ch == '{' else ']' for ch in reversed(stack))
+        return json.loads(text + suffix)
 
 
 async def _http_text(config, instruction, material):

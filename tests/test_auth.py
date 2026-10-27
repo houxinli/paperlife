@@ -82,6 +82,19 @@ class AuthTests(unittest.TestCase):
             ws.send_json({'ticket': ticket})
             self.assertEqual(ws.receive_json()['type'], 'error')
 
+    def test_shared_ip_does_not_lock_other_accounts_but_account_limit_holds(self):
+        from fastapi import HTTPException
+
+        for _ in range(10):
+            self.auth.record_attempt('password', 'fictional-a', 'family-nat', 10, 300)
+        with self.assertRaises(HTTPException):
+            self.auth.record_attempt('password', 'fictional-a', 'other-ip', 10, 300)
+        self.auth.record_attempt('password', 'fictional-b', 'family-nat', 10, 300)
+        for index in range(39):
+            self.auth.record_attempt('password', f'fictional-{index}', 'family-nat', 10, 300)
+        with self.assertRaises(HTTPException):
+            self.auth.record_attempt('password', 'fictional-new', 'family-nat', 10, 300)
+
     def test_wechat_rate_limits_are_independent_between_ips(self):
         for _ in range(30):
             self.auth.record_attempt('wechat', 'ip:attacker', 'attacker', 30, 300)

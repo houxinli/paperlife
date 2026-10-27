@@ -31,7 +31,7 @@ class Configuration(BaseModel):
     enabled: StrictBool
 
 
-def install_listening(router, store, current_user, profile_access, session_access, guest_access, issue_ticket):
+def install_listening(router, store, current_user, access, issue_ticket):
     from .listening_asr import public_config, save_config
 
     def translate(fn, *args, **kwargs):
@@ -47,7 +47,7 @@ def install_listening(router, store, current_user, profile_access, session_acces
         return public_config(store, user.role == 'admin')
 
     @router.get('/guest/listening/provider')
-    def guest_provider(link=Depends(guest_access)):
+    def guest_provider(link=Depends(access.guest)):
         return public_config(store, False)
 
     @router.put('/listening/provider')
@@ -65,13 +65,13 @@ def install_listening(router, store, current_user, profile_access, session_acces
 
     @router.post('/profiles/{ident}/listening')
     def start(ident: str, data: Start, request: Request, user=Depends(current_user)):
-        profile_access(ident, user, edit=True)
+        access.profile(ident, user, edit=True)
         header = request.headers.get('authorization', '')
         token = header[7:] if header.startswith('Bearer ') else request.cookies.get('paperlife_session', '')
         return create(ident, user.id, data, auth_digest=hashlib.sha256(token.encode()).hexdigest())
 
     @router.post('/guest/listening')
-    def guest_start(data: Start, link=Depends(guest_access)):
+    def guest_start(data: Start, link=Depends(access.guest)):
         uid = -link['id']
         with store.db() as db:
             count = db.execute(
@@ -82,7 +82,7 @@ def install_listening(router, store, current_user, profile_access, session_acces
         return create(link['profile'], uid, data, link_id=link['id'])
 
     def check(ident, user, edit=False):
-        s = session_access(ident, user, edit=edit)
+        s = access.session(ident, user, edit=edit)
         if s['mode'] != 'listening':
             raise HTTPException(404, '旁听记录不存在')
         return s
@@ -90,7 +90,7 @@ def install_listening(router, store, current_user, profile_access, session_acces
     @router.get('/listening/sessions/{ident}')
     def get(ident: str, user=Depends(current_user)):
         s = check(ident, user)
-        p = profile_access(s['profile'], user)
+        p = access.profile(s['profile'], user)
         return translate(listening_store.detail, store, ident, p['role'] != 'reader')
 
     @router.get('/listening/sessions/{ident}/versions/{version}')
@@ -117,7 +117,7 @@ def install_listening(router, store, current_user, profile_access, session_acces
         return result
 
     @router.get('/guest/listening/{ident}')
-    def guest_get(ident: str, link=Depends(guest_access)):
+    def guest_get(ident: str, link=Depends(access.guest)):
         s = store.session(ident)
         if not s or s['profile'] != link['profile'] or s['mode'] != 'listening':
             raise HTTPException(404, '旁听记录不存在或未获授权')

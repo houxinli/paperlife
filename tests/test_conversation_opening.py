@@ -39,7 +39,7 @@ class ConversationOpeningTests(unittest.IsolatedAsyncioTestCase):
             )
             with (
                 patch('paperlife.lifebook.realtime.connect', return_value=provider),
-                patch('paperlife.lifebook.processing.enqueue'),
+                patch('paperlife.lifebook.editor_jobs.enqueue_session'),
             ):
                 await asyncio.wait_for(interview(RecordingClient(), store, session, profile), 2)
             self.assertEqual(store.preferences(profile['id']), [])

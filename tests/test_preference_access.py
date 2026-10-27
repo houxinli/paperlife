@@ -1,6 +1,5 @@
 """采访习惯只能由该档案讲述者或整理者撤销。"""
 
-import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,12 +14,9 @@ class PreferenceAccessTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.path = Path(self.tmp.name)
-        with sqlite3.connect(self.path / 'main.db') as db:
-            db.execute('CREATE TABLE users(id INTEGER PRIMARY KEY,is_active INTEGER)')
-            db.executemany('INSERT INTO users VALUES(?,1)', [(1,), (2,)])
         self.user = SimpleNamespace(id=1, role='admin')
         app = FastAPI()
-        app.include_router(build_router(self.path / 'main.db', lambda: self.user))
+        app.include_router(build_router(Store(self.path / 'life'), lambda: self.user, lambda uid: uid in (1, 2)))
         self.client = TestClient(app)
         self.store = Store(self.path / 'life')
         self.p = self.store.create_profile(1, '虚构甲', '')

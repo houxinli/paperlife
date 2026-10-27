@@ -20,7 +20,7 @@ class ItemInput(BaseModel):
     version: int = Field(default=0, ge=0)
 
 
-def install_content(router, store, current_user, profile_access):
+def install_content(router, store, current_user, access):
     def validate_sources(profile, ids):
         with store.db() as db:
             for ident in ids:
@@ -32,12 +32,12 @@ def install_content(router, store, current_user, profile_access):
 
     @router.post('/profiles/{ident}/links')
     def create_link(ident: str, user=Depends(current_user)):
-        profile_access(ident, user, owner=True)
+        access.profile(ident, user, owner=True)
         return store.create_link(ident)
 
     @router.get('/profiles/{ident}/links')
     def links(ident: str, user=Depends(current_user)):
-        profile_access(ident, user, owner=True)
+        access.profile(ident, user, owner=True)
         with store.db() as db:
             return [
                 dict(r)
@@ -49,28 +49,28 @@ def install_content(router, store, current_user, profile_access):
 
     @router.delete('/profiles/{ident}/links/{link_id}')
     def revoke_link(ident: str, link_id: int, user=Depends(current_user)):
-        profile_access(ident, user, owner=True)
+        access.profile(ident, user, owner=True)
         with store.db() as db:
             db.execute('UPDATE narrator_links SET revoked=1 WHERE id=? AND profile=?', (link_id, ident))
         return {'ok': True}
 
     @router.get('/profiles/{ident}/sources')
     def sources(ident: str, user=Depends(current_user)):
-        profile_access(ident, user)
+        access.profile(ident, user)
         with store.db() as db:
             return [dict(r) for r in db.execute('SELECT * FROM sources WHERE profile=? ORDER BY created_at', (ident,))]
 
     @router.get('/profiles/{ident}/items')
     def items(ident: str, user=Depends(current_user)):
-        access = profile_access(ident, user)
+        member = access.profile(ident, user)
         with store.db() as db:
             ids = [r['id'] for r in db.execute('SELECT id FROM items WHERE profile=? ORDER BY created_at,id', (ident,))]
         result = [store.item(i) for i in ids]
-        return [i for i in result if access['role'] != 'reader' or i['status'] in ('confirmed', 'open', 'resolved')]
+        return [i for i in result if member['role'] != 'reader' or i['status'] in ('confirmed', 'open', 'resolved')]
 
     @router.post('/profiles/{ident}/items')
     def add_item(ident: str, data: ItemInput, user=Depends(current_user)):
-        profile_access(ident, user, edit=True)
+        access.profile(ident, user, edit=True)
         validate_sources(ident, data.source_ids)
         return store.add_item(ident, data.model_dump())
 
@@ -79,7 +79,7 @@ def install_content(router, store, current_user, profile_access):
         item = store.item(ident)
         if not item:
             raise HTTPException(404, '条目不存在')
-        profile_access(item['profile'], user, edit=True)
+        access.profile(item['profile'], user, edit=True)
         validate_sources(item['profile'], data.source_ids)
         if any((e.get('source_id') or e.get('session_id')) not in data.source_ids for e in item.get('evidence', [])):
             raise HTTPException(422, '不能移除自动草稿引用的原始采访')
@@ -125,8 +125,8 @@ def install_content(router, store, current_user, profile_access):
         item = store.item(ident)
         if not item:
             raise HTTPException(404, '条目不存在')
-        access = profile_access(item['profile'], user)
-        if access['role'] == 'reader':
+        member = access.profile(item['profile'], user)
+        if member['role'] == 'reader':
             raise HTTPException(404, '条目尚未确认')
         with store.db() as db:
             return [
@@ -139,12 +139,12 @@ def install_content(router, store, current_user, profile_access):
 
     @router.get('/profiles/{ident}/processing')
     def processing_status(ident: str, user=Depends(current_user)):
-        profile_access(ident, user, edit=True)
+        access.profile(ident, user, edit=True)
         with store.db() as db:
             old = [
                 dict(r)
                 for r in db.execute(
-                    'SELECT session,status,attempts,progress,total,error,created_at,completed_at FROM processing_jobs WHERE profile=? ORDER BY created_at DESC',
+                    "SELECT session,status,attempts,progress,total,error,created_at,completed_at FROM processing_jobs WHERE profile=? AND status!='superseded' ORDER BY created_at DESC",
                     (ident,),
                 )
             ]
@@ -164,7 +164,7 @@ def install_content(router, store, current_user, profile_access):
         session = store.session(ident)
         if not session:
             raise HTTPException(404, '采访不存在')
-        profile_access(session['profile'], user, edit=True)
+        access.profile(session['profile'], user, edit=True)
         if session['status'] not in ('ended', 'interrupted'):
             raise HTTPException(409, '请先结束采访')
         job = enqueue_session(store, ident)

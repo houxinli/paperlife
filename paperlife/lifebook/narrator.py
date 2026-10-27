@@ -5,7 +5,7 @@ from fastapi import Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 
 
-def install_narrator(router, store, current_user, profile_access, guest_access):
+def install_narrator(router, store, current_user, access):
     def history(profile, offset, limit):
         with store.db() as db:
             rows = [
@@ -59,19 +59,19 @@ def install_narrator(router, store, current_user, profile_access, guest_access):
     def guest_history(
         offset: int = Query(default=0, ge=0, le=100000),
         limit: int = Query(default=20, ge=1, le=50),
-        link=Depends(guest_access),
+        link=Depends(access.guest),
     ):
         return history(link['profile'], offset, limit)
 
     @router.get('/guest/history/{ident}')
-    def guest_session(ident: str, link=Depends(guest_access)):
+    def guest_session(ident: str, link=Depends(access.guest)):
         session = owned_session(ident, link['profile'])
         return {k: session[k] for k in ('id', 'title', 'status', 'created_at', 'edited_text', 'version', 'mode')} | {
             'turns': store.turns(ident)
         }
 
     @router.get('/guest/history/{ident}/audio')
-    def guest_audio(ident: str, track: Literal['user', 'assistant'] = 'user', link=Depends(guest_access)):
+    def guest_audio(ident: str, track: Literal['user', 'assistant'] = 'user', link=Depends(access.guest)):
         owned_session(ident, link['profile'])
         path = store.audio_path(ident, track)
         if not path.exists():
@@ -79,7 +79,7 @@ def install_narrator(router, store, current_user, profile_access, guest_access):
         return FileResponse(path, media_type='audio/wav', headers={'Cache-Control': 'private, no-store'})
 
     @router.get('/guest/book')
-    def guest_book(link=Depends(guest_access)):
+    def guest_book(link=Depends(access.guest)):
         return book(link['profile'])
 
     @router.get('/profiles/{ident}/history')
@@ -89,10 +89,10 @@ def install_narrator(router, store, current_user, profile_access, guest_access):
         limit: int = Query(default=20, ge=1, le=50),
         user=Depends(current_user),
     ):
-        profile_access(ident, user)
+        access.profile(ident, user)
         return history(ident, offset, limit)
 
     @router.get('/profiles/{ident}/book')
     def member_book(ident: str, user=Depends(current_user)):
-        profile_access(ident, user)
+        access.profile(ident, user)
         return book(ident)

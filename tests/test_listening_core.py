@@ -20,7 +20,7 @@ class ListeningTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.user = SimpleNamespace(id=1, role='admin')
         app = FastAPI()
-        app.include_router(build_router(self.root / 'auth.db', lambda: self.user))
+        app.include_router(build_router(Store(self.root / 'life'), lambda: self.user, lambda uid: True))
         self.client = TestClient(app)
         self.store = Store(self.root / 'life')
         self.p = self.store.create_profile(1, '虚构主体', '')
@@ -203,8 +203,9 @@ class ListeningTests(unittest.TestCase):
             ws.send_json({'ticket': next_session['ticket']})
             self.assertEqual(ws.receive_json()['type'], 'error')
 
-    def test_legacy_queue_refuses_listening_and_restart_freezes_partial(self):
-        from paperlife.lifebook.processing import enqueue, recover_interrupted
+    def test_queue_refuses_unbound_listening_and_restart_freezes_partial(self):
+        from paperlife.lifebook.editor_jobs import enqueue_session as enqueue
+        from paperlife.lifebook.worker import recover_interrupted
         from paperlife.lifebook.listening_store import save_recognition
 
         sid = self.create()['id']

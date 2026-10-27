@@ -8,15 +8,6 @@ from .materials import MaterialError, ConflictError
 IDENT = re.compile(r'^[A-Za-z0-9_-]{1,80}$')
 
 
-def migrate(db):
-    if 'mode' not in {r['name'] for r in db.execute('PRAGMA table_info(sessions)')}:
-        db.execute("ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'dialogue'")
-    db.executescript('''
-        CREATE TABLE IF NOT EXISTS listening_originals(session TEXT PRIMARY KEY, segments TEXT NOT NULL DEFAULT '[]', recognition_status TEXT NOT NULL DEFAULT 'pending', finalized INTEGER NOT NULL DEFAULT 0);
-        CREATE TABLE IF NOT EXISTS listening_annotations(session TEXT NOT NULL, version INTEGER NOT NULL, participants TEXT NOT NULL, bindings TEXT NOT NULL, overrides TEXT NOT NULL, editor INTEGER, created_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(session,version));
-    ''')
-
-
 def validate_participants(participants):
     if not isinstance(participants, list) or len(participants) > 30:
         raise MaterialError('参与者最多30位')

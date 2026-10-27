@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import sqlite3
 import subprocess
 import tempfile
 import unittest
@@ -55,11 +54,13 @@ class ConversationContractTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         db = Path(self.tmp.name) / 'auth.sqlite3'
-        with sqlite3.connect(db) as connection:
-            connection.execute('CREATE TABLE users(id INTEGER PRIMARY KEY,is_active INTEGER)')
-            connection.execute('INSERT INTO users VALUES(1,1)')
         app = FastAPI()
-        app.include_router(build_router(db, lambda: SimpleNamespace(id=1, role='admin')), prefix='/api')
+        app.include_router(
+            build_router(
+                Store(Path(db).parent / 'life'), lambda: SimpleNamespace(id=1, role='admin'), lambda uid: uid == 1
+            ),
+            prefix='/api',
+        )
         self.client = TestClient(app)
         self.store = Store(Path(self.tmp.name) / 'life')
         self.client.put('/api/life/provider', json={'api_key': 'fictional'})
@@ -150,7 +151,7 @@ class ConversationContractTests(unittest.IsolatedAsyncioTestCase):
         session = self.store.create_session(self.profile['id'], 1, '虚构日常')
         with (
             patch('paperlife.lifebook.realtime.connect', return_value=remote),
-            patch('paperlife.lifebook.processing.enqueue'),
+            patch('paperlife.lifebook.editor_jobs.enqueue_session'),
         ):
             await asyncio.wait_for(interview(client, self.store, session, self.profile), 2)
         names = set()

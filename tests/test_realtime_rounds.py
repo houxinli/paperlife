@@ -107,7 +107,7 @@ class RealtimeRoundsTests(unittest.IsolatedAsyncioTestCase):
             session = store.create_session(profile['id'], 1, '虚构测试')
             with (
                 patch('paperlife.lifebook.realtime.connect', return_value=remote),
-                patch('paperlife.lifebook.processing.enqueue'),
+                patch('paperlife.lifebook.editor_jobs.enqueue_session'),
             ):
                 await asyncio.wait_for(interview(client, store, session, profile), 2)
             self.assertEqual(store.turns(session['id'])[0]['text'], text)
@@ -144,7 +144,7 @@ class RealtimeRoundsTests(unittest.IsolatedAsyncioTestCase):
             with (
                 self.assertLogs('paperlife.lifebook.realtime', level='INFO') as logs,
                 patch('paperlife.lifebook.realtime.connect', return_value=remote),
-                patch('paperlife.lifebook.processing.enqueue'),
+                patch('paperlife.lifebook.editor_jobs.enqueue_session'),
             ):
                 await asyncio.wait_for(interview(client, store, session, profile), 2)
             starts = [

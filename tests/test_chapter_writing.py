@@ -46,7 +46,7 @@ class ChapterTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.user = SimpleNamespace(id=1, role='admin')
         app = FastAPI()
-        app.include_router(build_router(self.root / 'auth.db', lambda: self.user))
+        app.include_router(build_router(Store(self.root / 'life'), lambda: self.user, lambda uid: True))
         self.client = TestClient(app)
         self.store = Store(self.root / 'life')
         self.profile = self.store.create_profile(1, '虚构讲述者', '')

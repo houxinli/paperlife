@@ -1,6 +1,6 @@
 """Paperlife 独立服务，不加载任何交易模块。"""
 
-import asyncio, os
+import asyncio, logging, os
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from fastapi import FastAPI
@@ -9,10 +9,22 @@ from fastapi.staticfiles import StaticFiles
 from .auth import Auth
 from .lifebook.api import build_router
 from .lifebook.store import Store
-from .lifebook.processing import worker, recover_interrupted
+from .lifebook.worker import worker, recover_interrupted
+
+logging.basicConfig(level=os.getenv('PAPERLIFE_LOG_LEVEL', 'INFO'))
+# 外部请求库的逐请求日志对排障帮助小，且会刷屏。
+logging.getLogger('httpx').setLevel(logging.WARNING)
+
+
+def require_single_worker():
+    # 票据、活跃会话与后台 worker 都在进程内；多 worker 会让票据随机失效并重复整理。
+    workers = os.getenv('WEB_CONCURRENCY', '1')
+    if workers.strip() != '1':
+        raise RuntimeError(f'Paperlife 只支持单 worker 部署，当前 WEB_CONCURRENCY={workers}')
 
 
 def create_app(data_dir=None, start_worker=True):
+    require_single_worker()
     root = Path(data_dir or os.getenv('PAPERLIFE_DATA_DIR', 'data'))
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     auth = Auth(root / 'auth.sqlite3')
@@ -44,7 +56,8 @@ def create_app(data_dir=None, start_worker=True):
     app.state.store = store
     app.include_router(auth_router, prefix='/api')
     app.include_router(
-        build_router(root / 'auth.sqlite3', auth.current, account_authorized=auth.authorized), prefix='/api'
+        build_router(store, auth.current, account_active=auth.authorized, account_authorized=auth.authorized),
+        prefix='/api',
     )
 
     @app.get('/health')

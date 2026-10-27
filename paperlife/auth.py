@@ -79,16 +79,18 @@ class Auth:
             )
             return r.lastrowid
 
-    def record_attempt(self, kind, subject, ip, limit, window):
+    def record_attempt(self, kind, subject, ip, limit, window, ip_limit=None):
+        # 同一账号/号码与同一 IP 分别限流；家庭共用出口 IP 时，IP 上限放宽，避免互相锁死。
+        ip_limit = ip_limit or limit * 5
         now = time.time()
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')
             db.execute('DELETE FROM attempts WHERE created<?', (now - 86400,))
-            count = db.execute(
-                'SELECT count(*) FROM attempts WHERE kind=? AND created>? AND (subject=? OR ip=?)',
-                (kind, now - window, subject, ip),
-            ).fetchone()[0]
-            if count >= limit:
+            by_subject, by_ip = db.execute(
+                'SELECT count(*) FILTER (WHERE subject=?), count(*) FILTER (WHERE ip=?) FROM attempts WHERE kind=? AND created>?',
+                (subject, ip, kind, now - window),
+            ).fetchone()
+            if by_subject >= limit or by_ip >= ip_limit:
                 raise HTTPException(429, '操作太频繁，请稍后再试')
             db.execute('INSERT INTO attempts VALUES(?,?,?,?)', (kind, subject, ip, now))
 
