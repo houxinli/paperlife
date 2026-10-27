@@ -4,7 +4,7 @@ Paperlife 采用一套后端业务、一份共享纯状态机，以及 Web/微�
 
 ## 规模与复用口径
 
-2026-10-24 在本轮重构前的 `c941ea8` 上，按 Git 跟踪的生产源码统计；排除测试、文档、示例配置、生成文件和第三方代码。行数为物理行，字节为 UTF-8。源码有较长的压缩行，不能用行数代替功能复杂度。
+以下是 2026-10-24 在 `c941ea8`（共享音频核心重构前）上的历史快照，仅用来说明当时的复用判断，不代表当前规模。按 Git 跟踪的生产源码统计；排除测试、文档、示例配置、生成文件和第三方代码。行数为物理行，字节为 UTF-8。源码有较长的压缩行，不能用行数代替功能复杂度。
 
 | 范围 | 文件数 | 行数 | 字节 |
 |---|---:|---:|---:|
@@ -25,9 +25,11 @@ Paperlife 采用一套后端业务、一份共享纯状态机，以及 Web/微�
 | 层 | 位置 | 职责 |
 |---|---|---|
 | 账号与身份 | `paperlife/auth.py`、`identity_providers.py` | 密码、短信、微信登录；普通身份不自动取得家人授权 |
-| REST 与授权 | `lifebook/api.py`、`narrator.py`、`content.py` | 账号/guest 范围、一次性票据、历史、confirmed 内容与家人校对 |
+| 授权判定 | `lifebook/access.py` | 档案/会话/专属链接的统一判定，各路由模块共用 |
+| REST | `lifebook/api.py`、`narrator.py`、`content.py` | 账号/guest 范围、一次性票据、历史、confirmed 内容与家人校对 |
 | 实时对话 | `lifebook/realtime.py`、`prompt.py`、`preferences.py`、`policies/interviewer.md` | 模型代理、开场、结束意愿、明确偏好；不由模型修改授权 |
-| 资料与整理 | `lifebook/store.py`、`materials.py`、`editor_jobs.py` | 原文/校订快照、素材提取与版本化编辑任务；旧 processing/generation 保留历史任务兼容 |
+| 存储与迁移 | `lifebook/store.py`、`schema.py` | 唯一的 `Store` 由 `create_app` 创建并注入；编号迁移见[数据模型](data-model.md) |
+| 资料与整理 | `materials.py`、`editor_jobs.py`、`worker.py` | 原文/校订快照、素材提取与版本化编辑任务；单一后台 worker 与启动恢复 |
 | 章节与模型 | `lifebook/chapters.py`、`chapter_api.py`、`editor_models.py`、`writing_rules.py` | 跨会话写作、独立模型配置、非虚构规则、人工发布及不可变确认版本 |
 | 共享纯逻辑 | `shared/audio-gate.js` | 回答音频边界、取消/完成记录、结束后不可重新开门 |
 | Web 音频适配 | `web/life/audio.js`、`capture.js` | getUserMedia、AudioWorklet、WebSocket、浏览器播放和恢复声音 |
@@ -98,5 +100,5 @@ node scripts/sync_shared.mjs --check
 ## 后续演进边界
 
 - 独立产品只在 paperlife 开发，旧 GCP 宿主只回补固定版本的兼容文件。正式迁移后取消这个临时副本，不让两仓独立演化业务。
-- 当前票据与活跃会话在单进程内，数据库/音频是单机私有卷；不能直接开启多 worker 或多副本就宣称支持横向扩容。扩容前先调整共享票据、会话租约和持久化存储，并保留同一客户端契约。
+- 当前票据与活跃会话在单进程内，数据库/音频是单机私有卷；镜像固定 `--workers 1`，`WEB_CONCURRENCY` 不为 1 时拒绝启动。不能直接开启多 worker 或多副本就宣称支持横向扩容。扩容前先调整共享票据、会话租约和持久化存储，并保留同一客户端契约。
 - 当前 v1 是覆盖核心流的可执行测试契约，不是完整 SDK 生成器。新业务接口必须补文档、边界测试和兼容策略；不要把测试通过当成所有未来场景都已覆盖。

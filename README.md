@@ -42,6 +42,8 @@ PYTHON_BIN=.venv/bin/python ./scripts/check.sh
 - [部署、迁移与回滚](docs/operations.md)
 - [聊天与记录约定](policies/interviewer.md)
 - [双端复用、v1契约与维护边界](docs/architecture.md)
+- [数据模型、迁移与状态](docs/data-model.md)
+- [接口一览](docs/api.md)
 - [火山/腾讯费用与备案对比](docs/cloud-options.md)
 - [个体工商户远程登记核验](docs/business-registration-notes.md)
 
