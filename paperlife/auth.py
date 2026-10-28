@@ -35,6 +35,12 @@ class Otp(Phone):
     code: str = Field(pattern=r'^\d{6}$')
 
 
+def request_token(request):
+    """小程序用 Bearer，网页用 Cookie；Bearer 优先。"""
+    header = request.headers.get('authorization', '')
+    return header[7:] if header.startswith('Bearer ') else request.cookies.get('paperlife_session', '')
+
+
 class Auth:
     def __init__(self, path):
         self.path = Path(path)
@@ -171,9 +177,7 @@ class Auth:
         router = APIRouter(prefix='/auth', route_class=PrivateRoute)
 
         def current(request: Request):
-            header = request.headers.get('authorization', '')
-            token = header[7:] if header.startswith('Bearer ') else request.cookies.get('paperlife_session', '')
-            user = self.user(token)
+            user = self.user(request_token(request))
             if not user:
                 raise HTTPException(401, '请先登录')
             return user
@@ -215,11 +219,10 @@ class Auth:
 
         @router.post('/logout')
         def logout(request: Request, response: Response):
-            header = request.headers.get('authorization', '')
-            token = header[7:] if header.startswith('Bearer ') else request.cookies.get('paperlife_session', '')
             with self.db() as db:
                 db.execute(
-                    'DELETE FROM auth_sessions WHERE token_hash=?', (hashlib.sha256(token.encode()).hexdigest(),)
+                    'DELETE FROM auth_sessions WHERE token_hash=?',
+                    (hashlib.sha256(request_token(request).encode()).hexdigest(),),
                 )
             response.delete_cookie('paperlife_session', path=(request.scope.get('root_path', '') or '') + '/')
             return {'ok': True}

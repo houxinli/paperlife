@@ -5,7 +5,6 @@ import json
 import logging
 import secrets
 import time
-import hashlib
 from typing import Literal
 from urllib.parse import urlparse
 
@@ -46,10 +45,13 @@ class MemberInput(BaseModel):
     role: Literal['editor', 'reader']
 
 
-def build_router(store, current_user, account_active, account_authorized=None):
-    """store 由应用创建并共享；account_active(uid) 判断账号存在且启用，lifebook 不直接读账号库。"""
+def build_router(store, current_user, account_active, account_authorized=None, session_cookie='paperlife_session'):
+    """store 由应用创建并共享；account_active(uid) 判断账号存在且启用，lifebook 不直接读账号库。
+
+    session_cookie 是宿主登录 Cookie 名；嵌入 paperbridge 等宿主时传入宿主自己的名字。
+    """
     router = APIRouter(prefix='/life', tags=['life'], route_class=PrivateRoute)
-    access = Access(store, account_authorized)
+    access = Access(store, account_authorized, session_cookie)
     # 票据与活跃会话只在本进程内存中，部署必须保持单 worker（见 docs/architecture.md）。
     tickets = {}
     active = set()
@@ -175,10 +177,8 @@ def build_router(store, current_user, account_active, account_authorized=None):
     @router.post('/profiles/{ident}/sessions')
     def start(ident: str, data: TopicInput, request: Request, user=Depends(current_user)):
         access.profile(ident, user, edit=True)
-        header = request.headers.get('authorization', '')
-        token = header[7:] if header.startswith('Bearer ') else request.cookies.get('paperlife_session', '')
         return issue_ticket(
-            ident, user.id, data.topic, auth_digest=hashlib.sha256(token.encode()).hexdigest(), transport=data.transport
+            ident, user.id, data.topic, auth_digest=access.session_digest(request), transport=data.transport
         )
 
     @router.get('/guest')
@@ -305,6 +305,9 @@ def build_router(store, current_user, account_active, account_authorized=None):
             except Exception:
                 pass
         finally:
+            if ticket:
+                # 只影响仍在 connecting 的会话：鉴权失败或采访开始前出错时不留下“连接中”的记录。
+                store.abandon_session(ticket['session'])
             if claimed:
                 active.discard(uid)
             try:

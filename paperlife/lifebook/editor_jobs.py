@@ -2,11 +2,14 @@
 
 import asyncio
 import json
+import logging
 import time
 import uuid
 
 from . import chapters
 from .materials import MaterialError, ConflictError, checked_evidence, digest, snapshot
+
+log = logging.getLogger(__name__)
 
 
 def _json(value):
@@ -72,9 +75,11 @@ def _enqueue(store, profile, kind, refs, requester, chapter=None, brief=None):
             {'profile': profile, 'kind': kind, 'chapter': chapter, 'snapshot': data, 'existing_versions': count}
         )
         ident = uuid.uuid4().hex
+        first = data['sources'][0]
+        source_session = first['id'] if kind == 'material' and first['kind'] == 'session' else None
         db.execute(
-            'INSERT OR IGNORE INTO writing_jobs(id,profile,chapter,kind,requester,request_key,snapshot) VALUES(?,?,?,?,?,?,?)',
-            (ident, profile, chapter, kind, requester, key, _json(data)),
+            'INSERT OR IGNORE INTO writing_jobs(id,profile,chapter,kind,requester,request_key,snapshot,source_session) VALUES(?,?,?,?,?,?,?,?)',
+            (ident, profile, chapter, kind, requester, key, _json(data), source_session),
         )
         return _public_job(db.execute('SELECT * FROM writing_jobs WHERE request_key=?', (key,)).fetchone())
 
@@ -326,7 +331,9 @@ async def process_one(store, generator=None):
                 (job['id'], job['lease_token']),
             )
         raise
-    except Exception:
+    except Exception as error:
+        # 只记录异常类型与任务编号，不记录素材原文或模型输出。
+        log.warning('writing job %s attempt %s failed with %s', job['id'], job['attempts'], type(error).__name__)
         with store.db() as db:
             db.execute(
                 "UPDATE writing_jobs SET status=?,next_run=?,lease_until=0,error=? WHERE id=? AND lease_token=? AND status='running'",
@@ -342,13 +349,15 @@ async def process_one(store, generator=None):
 
 
 # 只扫描新结束会话；旧队列已完成的会话视为历史成果，不重新调用模型。
-def enqueue_missing(store):
+def enqueue_missing(store, skipped=None):
+    """skipped 记录暂时无法整理的 (会话, 版本)，如旁听尚未确认讲述者或校订为空；版本变化后再试。"""
     with store.db() as db:
-        ids = [
-            r['id']
-            for r in db.execute(
-                "SELECT s.id FROM sessions s WHERE s.status IN ('ended','interrupted') AND EXISTS(SELECT 1 FROM turns t WHERE t.session=s.id AND t.role='user' AND trim(t.text)!='') AND NOT EXISTS(SELECT 1 FROM processing_jobs p WHERE p.session=s.id AND p.status='completed') AND NOT EXISTS(SELECT 1 FROM writing_jobs j WHERE j.kind='material' AND j.profile=s.profile AND json_extract(j.snapshot,'$.sources[0].id')=s.id)"
-            )
-        ]
-    for ident in ids:
-        enqueue_session(store, ident)
+        rows = db.execute(
+            "SELECT s.id,s.version FROM sessions s WHERE s.status IN ('ended','interrupted') AND EXISTS(SELECT 1 FROM turns t WHERE t.session=s.id AND t.role='user' AND trim(t.text)!='') AND NOT EXISTS(SELECT 1 FROM processing_jobs p WHERE p.session=s.id AND p.status='completed') AND NOT EXISTS(SELECT 1 FROM writing_jobs j WHERE j.source_session=s.id)"
+        ).fetchall()
+    for row in rows:
+        key = (row['id'], row['version'])
+        if skipped is not None and key in skipped:
+            continue
+        if not enqueue_session(store, row['id']) and skipped is not None:
+            skipped.add(key)

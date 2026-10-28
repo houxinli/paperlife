@@ -10,9 +10,11 @@ log = logging.getLogger(__name__)
 
 
 async def worker(store):
+    skipped = set()
     while True:
         try:
-            enqueue_missing(store)
+            store.abandon_stale_connections()
+            enqueue_missing(store, skipped)
             await process_one(store)
         except asyncio.CancelledError:
             raise

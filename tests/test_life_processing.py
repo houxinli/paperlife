@@ -58,6 +58,70 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('life worker iteration failed', logs.output[0])
 
 
+class SessionCleanupTests(unittest.TestCase):
+    def test_unclaimed_connecting_sessions_are_interrupted_after_timeout(self):
+        from paperlife.lifebook.store import Store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp))
+            p = store.create_profile(1, '测试', '')
+            old = store.create_session(p['id'], 1, 'old')
+            fresh = store.create_session(p['id'], 1, 'fresh')
+            with store.db() as db:
+                db.execute("UPDATE sessions SET created_at=datetime('now','-10 minutes') WHERE id=?", (old['id'],))
+            self.assertEqual(store.abandon_stale_connections(), 1)
+            self.assertEqual(store.session(old['id'])['status'], 'interrupted')
+            self.assertEqual(store.session(fresh['id'])['status'], 'connecting')
+
+    def test_session_that_cannot_be_processed_is_retried_only_after_revision(self):
+        from paperlife.lifebook import editor_jobs
+        from paperlife.lifebook.store import Store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp))
+            p = store.create_profile(1, '测试', '')
+            s = store.create_session(p['id'], 1, 'test')
+            store.add_turn(s['id'], 'user', '人工虚构的测试句子', 0)
+            store.finish_session(s['id'], 'ended')
+            calls = []
+
+            def unavailable(store, ident):
+                calls.append(ident)
+                return None
+
+            skipped = set()
+            with patch.object(editor_jobs, 'enqueue_session', unavailable):
+                editor_jobs.enqueue_missing(store, skipped)
+                editor_jobs.enqueue_missing(store, skipped)
+                self.assertEqual(len(calls), 1)
+                with store.db() as db:
+                    db.execute('UPDATE sessions SET version=version+1 WHERE id=?', (s['id'],))
+                editor_jobs.enqueue_missing(store, skipped)
+                self.assertEqual(len(calls), 2)
+
+    def test_failed_writing_job_is_logged_without_content(self):
+        import asyncio
+        from paperlife.lifebook import editor_jobs
+        from paperlife.lifebook.store import Store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp))
+            p = store.create_profile(1, '测试', '')
+            s = store.create_session(p['id'], 1, 'test')
+            store.add_turn(s['id'], 'user', '人工虚构的私密句子', 0)
+            store.finish_session(s['id'], 'ended')
+            editor_jobs.enqueue_session(store, s['id'])
+
+            async def broken(stage, payload):
+                raise RuntimeError('虚构模型错误')
+
+            with self.assertLogs('paperlife.lifebook.editor_jobs', 'WARNING') as logs:
+                asyncio.run(editor_jobs.process_one(store, broken))
+            self.assertIn('RuntimeError', logs.output[0])
+            self.assertNotIn('私密', logs.output[0])
+            self.assertEqual(store.processing(p['id'])[0]['status'], 'pending')
+
+
 class SchemaTests(unittest.TestCase):
     def test_new_database_records_latest_version_and_migrations_run_once(self):
         from paperlife.lifebook.store import Store
@@ -130,6 +194,29 @@ class SchemaTests(unittest.TestCase):
                     )
                 }
             self.assertEqual(queued, {sessions[k] for k in ('pending', 'running', 'failed')})
+
+    def test_material_jobs_backfill_source_session_column(self):
+        from paperlife.lifebook import schema
+        from paperlife.lifebook.store import Store
+        from paperlife.lifebook.editor_jobs import enqueue_session
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp))
+            p = store.create_profile(1, '测试', '')
+            s = store.create_session(p['id'], 1, 'test')
+            store.add_turn(s['id'], 'user', '人工虚构的测试句子', 0)
+            store.finish_session(s['id'], 'ended')
+            enqueue_session(store, s['id'])
+            with store.db() as db:
+                db.execute('UPDATE writing_jobs SET source_session=NULL')
+                db.execute('PRAGMA user_version=2')
+            with store.db() as db:
+                schema.migrate(db)
+                self.assertEqual(db.execute('SELECT source_session FROM writing_jobs').fetchone()[0], s['id'])
+                plan = ' '.join(
+                    r[3] for r in db.execute('EXPLAIN QUERY PLAN SELECT * FROM turns WHERE session=?', (s['id'],))
+                )
+                self.assertIn('turns_session', plan)
 
 
 class ModelJsonTests(unittest.TestCase):

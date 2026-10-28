@@ -1,6 +1,5 @@
 """旁听受权入口；复用实时会话一次性票据。"""
 
-import hashlib
 from fastapi import Depends, HTTPException, Request
 from pydantic import BaseModel, Field, StrictBool
 from .materials import MaterialError, ConflictError
@@ -66,18 +65,12 @@ def install_listening(router, store, current_user, access, issue_ticket):
     @router.post('/profiles/{ident}/listening')
     def start(ident: str, data: Start, request: Request, user=Depends(current_user)):
         access.profile(ident, user, edit=True)
-        header = request.headers.get('authorization', '')
-        token = header[7:] if header.startswith('Bearer ') else request.cookies.get('paperlife_session', '')
-        return create(ident, user.id, data, auth_digest=hashlib.sha256(token.encode()).hexdigest())
+        return create(ident, user.id, data, auth_digest=access.session_digest(request))
 
     @router.post('/guest/listening')
     def guest_start(data: Start, link=Depends(access.guest)):
         uid = -link['id']
-        with store.db() as db:
-            count = db.execute(
-                "SELECT count(*) FROM sessions WHERE user=? AND created_at>datetime('now','-1 day')", (uid,)
-            ).fetchone()[0]
-        if count >= 20:
+        if store.sessions_last_day(uid) >= 20:
             raise HTTPException(429, '今天已录过很多次，请明天继续，或联系家人')
         return create(link['profile'], uid, data, link_id=link['id'])
 
