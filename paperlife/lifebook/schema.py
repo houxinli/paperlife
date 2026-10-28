@@ -66,7 +66,27 @@ def _retire_legacy_queue(db):
     )
 
 
-MIGRATIONS = [_baseline, _retire_legacy_queue]
+def _indexes_and_job_session(db):
+    # 常用外键列补索引；素材任务的来源会话单独成列，避免后台每轮解析整份快照 JSON。
+    # executescript 会先提交，所以加列保持幂等，中途失败后可以安全重跑。
+    if 'source_session' not in _columns(db, 'writing_jobs'):
+        db.execute('ALTER TABLE writing_jobs ADD COLUMN source_session TEXT')
+    db.execute(
+        "UPDATE writing_jobs SET source_session=json_extract(snapshot,'$.sources[0].id') WHERE kind='material' AND json_extract(snapshot,'$.sources[0].kind')='session'"
+    )
+    db.executescript('''
+        CREATE INDEX IF NOT EXISTS turns_session ON turns(session,id);
+        CREATE INDEX IF NOT EXISTS sessions_profile ON sessions(profile,created_at);
+        CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user,created_at);
+        CREATE INDEX IF NOT EXISTS members_user ON members(user);
+        CREATE INDEX IF NOT EXISTS items_profile ON items(profile,created_at);
+        CREATE INDEX IF NOT EXISTS narrator_links_profile ON narrator_links(profile);
+        CREATE INDEX IF NOT EXISTS writing_jobs_profile ON writing_jobs(profile,created_at);
+        CREATE INDEX IF NOT EXISTS writing_jobs_source_session ON writing_jobs(source_session) WHERE source_session IS NOT NULL;
+    ''')
+
+
+MIGRATIONS = [_baseline, _retire_legacy_queue, _indexes_and_job_session]
 
 
 def version(db):

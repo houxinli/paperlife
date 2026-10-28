@@ -5,7 +5,6 @@ import json
 import logging
 import secrets
 import time
-import hashlib
 from typing import Literal
 from urllib.parse import urlparse
 
@@ -175,10 +174,8 @@ def build_router(store, current_user, account_active, account_authorized=None):
     @router.post('/profiles/{ident}/sessions')
     def start(ident: str, data: TopicInput, request: Request, user=Depends(current_user)):
         access.profile(ident, user, edit=True)
-        header = request.headers.get('authorization', '')
-        token = header[7:] if header.startswith('Bearer ') else request.cookies.get('paperlife_session', '')
         return issue_ticket(
-            ident, user.id, data.topic, auth_digest=hashlib.sha256(token.encode()).hexdigest(), transport=data.transport
+            ident, user.id, data.topic, auth_digest=access.session_digest(request), transport=data.transport
         )
 
     @router.get('/guest')
@@ -305,6 +302,9 @@ def build_router(store, current_user, account_active, account_authorized=None):
             except Exception:
                 pass
         finally:
+            if ticket:
+                # 只影响仍在 connecting 的会话：鉴权失败或采访开始前出错时不留下“连接中”的记录。
+                store.abandon_session(ticket['session'])
             if claimed:
                 active.discard(uid)
             try:

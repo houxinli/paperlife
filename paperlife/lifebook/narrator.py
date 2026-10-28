@@ -6,46 +6,18 @@ from fastapi.responses import FileResponse
 
 
 def install_narrator(router, store, current_user, access):
-    def history(profile, offset, limit):
-        with store.db() as db:
-            rows = [
-                dict(r)
-                for r in db.execute(
-                    'SELECT id,title,status,created_at,version,mode FROM sessions WHERE profile=? ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?',
-                    (profile, limit + 1, offset),
-                )
-            ]
-        return {'sessions': rows[:limit], 'has_more': len(rows) > limit}
-
     def book(profile):
-        with store.db() as db:
-            ids = [
-                r['id']
-                for r in db.execute(
-                    "SELECT id FROM items WHERE profile=? AND status='confirmed' AND kind IN ('fact','person','event','story') ORDER BY created_at,id",
-                    (profile,),
-                )
-            ]
-            pending = db.execute(
-                "SELECT count(*) FROM items WHERE profile=? AND status='draft'", (profile,)
-            ).fetchone()[0]
         from .chapters import published
 
-        with store.db() as db:
-            pending += db.execute(
-                "SELECT count(*) FROM chapter_versions v JOIN chapters c ON c.id=v.chapter WHERE c.profile=? AND v.status='draft'",
-                (profile,),
-            ).fetchone()[0]
         items = []
-        for ident in ids:
-            item = store.item(ident)
+        for item in store.items(profile, ('confirmed',), ('fact', 'person', 'event', 'story')):
             item.pop('source_snapshot', None)
             item.pop('generation_metadata', None)
             items.append(item)
         allowed = ('id', 'chapter', 'number', 'title', 'body', 'evidence', 'status', 'confirmed_at', 'stale')
         return {
             'items': items,
-            'pending_count': pending,
+            'pending_count': store.pending_count(profile),
             'chapters': [{k: v[k] for k in allowed} for v in published(store, profile)],
         }
 
@@ -61,7 +33,7 @@ def install_narrator(router, store, current_user, access):
         limit: int = Query(default=20, ge=1, le=50),
         link=Depends(access.guest),
     ):
-        return history(link['profile'], offset, limit)
+        return store.history(link['profile'], offset, limit)
 
     @router.get('/guest/history/{ident}')
     def guest_session(ident: str, link=Depends(access.guest)):
@@ -90,7 +62,7 @@ def install_narrator(router, store, current_user, access):
         user=Depends(current_user),
     ):
         access.profile(ident, user)
-        return history(ident, offset, limit)
+        return store.history(ident, offset, limit)
 
     @router.get('/profiles/{ident}/book')
     def member_book(ident: str, user=Depends(current_user)):

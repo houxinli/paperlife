@@ -1,9 +1,10 @@
 """分层整理、待确认问题与可撤销长辈入口。"""
 
-import json
 from typing import Literal
 from fastapi import Depends, HTTPException
 from pydantic import BaseModel, Field
+
+from .materials import ConflictError
 
 
 class ItemInput(BaseModel):
@@ -22,13 +23,8 @@ class ItemInput(BaseModel):
 
 def install_content(router, store, current_user, access):
     def validate_sources(profile, ids):
-        with store.db() as db:
-            for ident in ids:
-                if not db.execute(
-                    'SELECT 1 FROM sources WHERE id=? AND profile=? UNION SELECT 1 FROM sessions WHERE id=? AND profile=?',
-                    (ident, profile, ident, profile),
-                ).fetchone():
-                    raise HTTPException(422, '来源必须属于当前人物档案')
+        if not store.owns_sources(profile, ids):
+            raise HTTPException(422, '来源必须属于当前人物档案')
 
     @router.post('/profiles/{ident}/links')
     def create_link(ident: str, user=Depends(current_user)):
@@ -38,35 +34,24 @@ def install_content(router, store, current_user, access):
     @router.get('/profiles/{ident}/links')
     def links(ident: str, user=Depends(current_user)):
         access.profile(ident, user, owner=True)
-        with store.db() as db:
-            return [
-                dict(r)
-                for r in db.execute(
-                    'SELECT id,expires,revoked,created_at FROM narrator_links WHERE profile=? ORDER BY id DESC',
-                    (ident,),
-                )
-            ]
+        return store.links(ident)
 
     @router.delete('/profiles/{ident}/links/{link_id}')
     def revoke_link(ident: str, link_id: int, user=Depends(current_user)):
         access.profile(ident, user, owner=True)
-        with store.db() as db:
-            db.execute('UPDATE narrator_links SET revoked=1 WHERE id=? AND profile=?', (link_id, ident))
+        store.revoke_link(ident, link_id)
         return {'ok': True}
 
     @router.get('/profiles/{ident}/sources')
     def sources(ident: str, user=Depends(current_user)):
         access.profile(ident, user)
-        with store.db() as db:
-            return [dict(r) for r in db.execute('SELECT * FROM sources WHERE profile=? ORDER BY created_at', (ident,))]
+        return store.sources(ident)
 
     @router.get('/profiles/{ident}/items')
     def items(ident: str, user=Depends(current_user)):
         member = access.profile(ident, user)
-        with store.db() as db:
-            ids = [r['id'] for r in db.execute('SELECT id FROM items WHERE profile=? ORDER BY created_at,id', (ident,))]
-        result = [store.item(i) for i in ids]
-        return [i for i in result if member['role'] != 'reader' or i['status'] in ('confirmed', 'open', 'resolved')]
+        # reader 只看已确认内容与问题，看不到 AI 草稿。
+        return store.items(ident, None if member['role'] != 'reader' else ('confirmed', 'open', 'resolved'))
 
     @router.post('/profiles/{ident}/items')
     def add_item(ident: str, data: ItemInput, user=Depends(current_user)):
@@ -85,40 +70,10 @@ def install_content(router, store, current_user, access):
             raise HTTPException(422, '不能移除自动草稿引用的原始采访')
         if item['kind'] != data.kind:
             raise HTTPException(422, '条目类型不可更换，请另建条目保留层级')
-        d = data.model_dump()
-        with store.db() as db:
-            db.execute('BEGIN IMMEDIATE')
-            from .materials import item_stale
-
-            if (
-                item['status'] == 'draft'
-                and data.status in ('confirmed', 'open', 'resolved')
-                and item_stale(store, item, db)
-            ):
-                raise HTTPException(409, '素材已经校订，请使用新整理的条目；旧草稿可保留或归档')
-            updated = db.execute(
-                'UPDATE items SET title=?,body=?,answer=?,status=?,source_ids=?,time_text=?,people=?,place=?,certainty=?,version=version+1 WHERE id=? AND version=?',
-                (
-                    data.title,
-                    data.body,
-                    data.answer,
-                    data.status,
-                    json.dumps(data.source_ids),
-                    data.time_text,
-                    data.people,
-                    data.place,
-                    data.certainty,
-                    ident,
-                    data.version,
-                ),
-            )
-            if not updated.rowcount:
-                raise HTTPException(409, '条目已有新版本，请重新打开')
-            db.execute(
-                'INSERT INTO item_revisions(item,version,snapshot,editor) VALUES(?,?,?,?)',
-                (ident, item['version'], json.dumps(item, ensure_ascii=False), user.id),
-            )
-        return store.item(ident)
+        try:
+            return store.edit_item(ident, data.model_dump(), user.id)
+        except ConflictError as error:
+            raise HTTPException(409, str(error)) from None
 
     @router.get('/items/{ident}/revisions')
     def item_revisions(ident: str, user=Depends(current_user)):
@@ -128,34 +83,12 @@ def install_content(router, store, current_user, access):
         member = access.profile(item['profile'], user)
         if member['role'] == 'reader':
             raise HTTPException(404, '条目尚未确认')
-        with store.db() as db:
-            return [
-                {**dict(r), 'snapshot': json.loads(r['snapshot'])}
-                for r in db.execute(
-                    'SELECT version,snapshot,created_at FROM item_revisions WHERE item=? ORDER BY version DESC',
-                    (ident,),
-                )
-            ]
+        return store.item_revisions(ident)
 
     @router.get('/profiles/{ident}/processing')
     def processing_status(ident: str, user=Depends(current_user)):
         access.profile(ident, user, edit=True)
-        with store.db() as db:
-            old = [
-                dict(r)
-                for r in db.execute(
-                    "SELECT session,status,attempts,progress,total,error,created_at,completed_at FROM processing_jobs WHERE profile=? AND status!='superseded' ORDER BY created_at DESC",
-                    (ident,),
-                )
-            ]
-            new = [
-                dict(r)
-                for r in db.execute(
-                    "SELECT json_extract(snapshot,'$.sources[0].id') session,status,attempts,CASE WHEN status='completed' THEN 1 ELSE 0 END progress,1 total,error,created_at,completed_at FROM writing_jobs WHERE profile=? AND kind='material' ORDER BY created_at DESC",
-                    (ident,),
-                )
-            ]
-            return sorted(old + new, key=lambda r: r['created_at'], reverse=True)
+        return store.processing(ident)
 
     @router.post('/sessions/{ident}/process')
     def start_processing(ident: str, user=Depends(current_user)):

@@ -158,6 +158,19 @@ class Store:
         with self.db() as db:
             db.execute('UPDATE sessions SET status=? WHERE id=?', (status, ident))
 
+    def abandon_session(self, ident):
+        """票据未被使用或连接在开始前失败：仍处于 connecting 的会话收尾为 interrupted。"""
+        with self.db() as db:
+            db.execute("UPDATE sessions SET status='interrupted' WHERE id=? AND status='connecting'", (ident,))
+
+    def abandon_stale_connections(self, minutes=5):
+        # 票据 60 秒过期、上游连接最多约 50 秒；超过这个时间仍在 connecting 的会话不会再开始。
+        with self.db() as db:
+            return db.execute(
+                "UPDATE sessions SET status='interrupted' WHERE status='connecting' AND created_at<datetime('now',?)",
+                (f'-{int(minutes)} minutes',),
+            ).rowcount
+
     def turns(self, ident):
         with self.db() as db:
             return [
@@ -174,7 +187,7 @@ class Store:
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')
             source = db.execute(
-                'SELECT s.profile,t.text FROM turns t JOIN sessions s ON s.id=t.session WHERE t.id=? AND t.session=? AND t.role=? AND s.mode="dialogue"',
+                "SELECT s.profile,t.text FROM turns t JOIN sessions s ON s.id=t.session WHERE t.id=? AND t.session=? AND t.role=? AND s.mode='dialogue'",
                 (turn_id, session_id, 'user'),
             ).fetchone()
             if not source or source['text'] != text:
@@ -276,6 +289,20 @@ class Store:
             )
             return {'id': result.lastrowid, 'token': token, 'expires': expires}
 
+    def links(self, profile):
+        with self.db() as db:
+            return [
+                dict(r)
+                for r in db.execute(
+                    'SELECT id,expires,revoked,created_at FROM narrator_links WHERE profile=? ORDER BY id DESC',
+                    (profile,),
+                )
+            ]
+
+    def revoke_link(self, profile, link_id):
+        with self.db() as db:
+            db.execute('UPDATE narrator_links SET revoked=1 WHERE id=? AND profile=?', (link_id, profile))
+
     def link(self, token=None, link_id=None):
         with self.db() as db:
             if token:
@@ -309,6 +336,124 @@ class Store:
 
             result['stale'] = item_stale(self, result, db)
             return result
+
+    def sources(self, profile):
+        with self.db() as db:
+            return [
+                dict(r) for r in db.execute('SELECT * FROM sources WHERE profile=? ORDER BY created_at', (profile,))
+            ]
+
+    def owns_sources(self, profile, ids):
+        """ids 中每一项都是本档案的导入资料或聊天。"""
+        with self.db() as db:
+            return all(
+                db.execute(
+                    'SELECT 1 FROM sources WHERE id=? AND profile=? UNION SELECT 1 FROM sessions WHERE id=? AND profile=?',
+                    (ident, profile, ident, profile),
+                ).fetchone()
+                for ident in ids
+            )
+
+    def items(self, profile, statuses=None, kinds=None):
+        query = 'SELECT id FROM items WHERE profile=?'
+        params = [profile]
+        for column, values in (('status', statuses), ('kind', kinds)):
+            if values is not None:
+                query += f' AND {column} IN ({",".join("?" * len(values))})'
+                params += list(values)
+        with self.db() as db:
+            ids = [r['id'] for r in db.execute(query + ' ORDER BY created_at,id', params)]
+        return [self.item(i) for i in ids]
+
+    def edit_item(self, ident, data, editor):
+        """乐观锁更新条目并追加修改历史；过期草稿不能直接确认。"""
+        from .materials import ConflictError, item_stale
+
+        item = self.item(ident)
+        with self.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if (
+                item['status'] == 'draft'
+                and data['status'] in ('confirmed', 'open', 'resolved')
+                and item_stale(self, item, db)
+            ):
+                raise ConflictError('素材已经校订，请使用新整理的条目；旧草稿可保留或归档')
+            updated = db.execute(
+                'UPDATE items SET title=?,body=?,answer=?,status=?,source_ids=?,time_text=?,people=?,place=?,certainty=?,version=version+1 WHERE id=? AND version=?',
+                (
+                    data['title'],
+                    data['body'],
+                    data['answer'],
+                    data['status'],
+                    json.dumps(data['source_ids']),
+                    data['time_text'],
+                    data['people'],
+                    data['place'],
+                    data['certainty'],
+                    ident,
+                    data['version'],
+                ),
+            )
+            if not updated.rowcount:
+                raise ConflictError('条目已有新版本，请重新打开')
+            db.execute(
+                'INSERT INTO item_revisions(item,version,snapshot,editor) VALUES(?,?,?,?)',
+                (ident, item['version'], json.dumps(item, ensure_ascii=False), editor),
+            )
+        return self.item(ident)
+
+    def item_revisions(self, ident):
+        with self.db() as db:
+            return [
+                {**dict(r), 'snapshot': json.loads(r['snapshot'])}
+                for r in db.execute(
+                    'SELECT version,snapshot,created_at FROM item_revisions WHERE item=? ORDER BY version DESC',
+                    (ident,),
+                )
+            ]
+
+    def pending_count(self, profile):
+        """待人工确认的条目与章节草稿数量。"""
+        with self.db() as db:
+            return db.execute(
+                "SELECT (SELECT count(*) FROM items WHERE profile=? AND status='draft')+(SELECT count(*) FROM chapter_versions v JOIN chapters c ON c.id=v.chapter WHERE c.profile=? AND v.status='draft')",
+                (profile, profile),
+            ).fetchone()[0]
+
+    def history(self, profile, offset, limit):
+        with self.db() as db:
+            rows = [
+                dict(r)
+                for r in db.execute(
+                    'SELECT id,title,status,created_at,version,mode FROM sessions WHERE profile=? ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?',
+                    (profile, limit + 1, offset),
+                )
+            ]
+        return {'sessions': rows[:limit], 'has_more': len(rows) > limit}
+
+    def processing(self, profile):
+        """旧队列的历史记录与新队列的素材整理任务，按时间倒序合并。"""
+        with self.db() as db:
+            old = [
+                dict(r)
+                for r in db.execute(
+                    "SELECT session,status,attempts,progress,total,error,created_at,completed_at FROM processing_jobs WHERE profile=? AND status!='superseded' ORDER BY created_at DESC",
+                    (profile,),
+                )
+            ]
+            new = [
+                dict(r)
+                for r in db.execute(
+                    "SELECT COALESCE(source_session,json_extract(snapshot,'$.sources[0].id')) session,status,attempts,CASE WHEN status='completed' THEN 1 ELSE 0 END progress,1 total,error,created_at,completed_at FROM writing_jobs WHERE profile=? AND kind='material' ORDER BY created_at DESC",
+                    (profile,),
+                )
+            ]
+        return sorted(old + new, key=lambda r: r['created_at'], reverse=True)
+
+    def job_profile(self, job):
+        with self.db() as db:
+            row = db.execute('SELECT profile FROM writing_jobs WHERE id=?', (job,)).fetchone()
+            return row['profile'] if row else None
 
     def add_item(self, profile, data):
         ident = uuid.uuid4().hex

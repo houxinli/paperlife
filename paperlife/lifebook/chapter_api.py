@@ -155,9 +155,8 @@ def install_chapters(router, store, current_user, access):
 
     @router.post('/writing-jobs/{ident}/retry')
     def retry_job(ident: str, user=Depends(current_user)):
-        with store.db() as db:
-            job = db.execute('SELECT profile FROM writing_jobs WHERE id=?', (ident,)).fetchone()
-        if not job:
+        profile = store.job_profile(ident)
+        if not profile:
             raise HTTPException(404, '任务不存在')
-        access.profile(job['profile'], user, edit=True)
+        access.profile(profile, user, edit=True)
         return editor_jobs.retry(store, ident)

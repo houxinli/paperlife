@@ -44,6 +44,16 @@ class NativeTicketTests(unittest.TestCase):
         self.assertIn('ValueError', logs.output[0])
         self.assertNotIn(ticket, logs.output[0])
 
+    def test_rejected_connection_does_not_leave_session_connecting(self):
+        started = self.client.post(
+            '/life/profiles/' + self.p['id'] + '/sessions', json={'topic': '虚构测试', 'transport': 'web'}
+        ).json()
+        with self.client.websocket_connect('/life/live') as ws:
+            ws.send_json({'ticket': started['ticket']})
+            self.assertEqual(ws.receive_json()['type'], 'error')
+        session = self.client.get('/life/sessions/' + started['id']).json()
+        self.assertEqual(session['status'], 'interrupted')
+
     def test_native_ticket_allows_absent_origin_but_is_one_use(self):
         ticket = self.ticket('wechat')
         with patch('paperlife.lifebook.realtime.interview', self.fake_interview):
