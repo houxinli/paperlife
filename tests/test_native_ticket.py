@@ -80,3 +80,22 @@ class NativeTicketTests(unittest.TestCase):
         with self.client.websocket_connect('/life/live') as ws:
             ws.send_json({'ticket': 'invented', 'transport': 'wechat'})
             self.assertEqual(ws.receive_json()['type'], 'error')
+
+
+class SessionDigestTests(unittest.TestCase):
+    def test_digest_uses_host_cookie_and_prefers_bearer(self):
+        import hashlib
+        from starlette.requests import Request
+        from paperlife.lifebook.access import Access
+
+        def request(*headers):
+            return Request({'type': 'http', 'headers': [(k.encode(), v.encode()) for k, v in headers]})
+
+        access = Access(None, session_cookie='host_session')
+        digest = lambda token: hashlib.sha256(token.encode()).hexdigest()
+        self.assertEqual(access.session_digest(request(('cookie', 'host_session=fictional'))), digest('fictional'))
+        self.assertEqual(access.session_digest(request(('cookie', 'paperlife_session=fictional'))), digest(''))
+        self.assertEqual(
+            access.session_digest(request(('authorization', 'Bearer bearer-token'), ('cookie', 'host_session=x'))),
+            digest('bearer-token'),
+        )

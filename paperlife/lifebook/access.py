@@ -6,9 +6,11 @@ from fastapi import Header, HTTPException, Request
 
 
 class Access:
-    def __init__(self, store, account_authorized=None):
+    def __init__(self, store, account_authorized=None, session_cookie='paperlife_session'):
         self.store = store
         self.account_authorized = account_authorized
+        # 宿主应用的登录 Cookie 名；嵌入其他应用时由宿主传入，保持与其登录方式一致。
+        self.session_cookie = session_cookie
 
     def profile(self, ident, user, edit=False, owner=False):
         p = self.store.profile(ident, user.id)
@@ -35,9 +37,8 @@ class Access:
             raise HTTPException(401, '专属链接已失效，请联系家人重新发送')
         return link
 
-    @staticmethod
-    def session_digest(request: Request):
-        """当前登录会话令牌的哈希；实时连接期间据此确认未注销。与 auth 的令牌来源保持一致。"""
+    def session_digest(self, request: Request):
+        """当前登录会话令牌的哈希；实时连接期间据此确认未注销。与宿主的令牌来源保持一致。"""
         header = request.headers.get('authorization', '')
-        token = header[7:] if header.startswith('Bearer ') else request.cookies.get('paperlife_session', '')
+        token = header[7:] if header.startswith('Bearer ') else request.cookies.get(self.session_cookie, '')
         return hashlib.sha256(token.encode()).hexdigest()
