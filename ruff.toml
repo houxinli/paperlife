@@ -1,0 +1,10 @@
+# 统一 Python 格式；保留原有引号风格，避免与格式无关的大面积改动。
+line-length = 120
+target-version = "py312"
+extend-exclude = ["docs", "data", "private"]
+
+[format]
+quote-style = "preserve"
+
+[lint]
+select = ["E9", "F63", "F7", "F82"]

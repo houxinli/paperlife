@@ -1,4 +1,5 @@
 """独立的私有编辑模型配置与有限调用；不承担 HTTP 用户授权。"""
+
 import asyncio
 from contextlib import suppress
 import fcntl
@@ -12,7 +13,6 @@ import uuid
 import httpx
 from websockets.asyncio.client import connect
 
-from .generation import parse_output
 from .protocol import decode, encode
 from .writing_rules import PROMPT_VERSION, prompt_hash, stage_prompt, task_message
 
@@ -88,9 +88,17 @@ def _configured(store, config):
 
 def public_config(store, can_configure):
     configs = _read_config(store)
-    return {**{role: {'provider': configs[role]['provider'], 'model': configs[role]['model'],
-                      'configured': _configured(store, configs[role])} for role in ROLES},
-            'can_configure': bool(can_configure)}
+    return {
+        **{
+            role: {
+                'provider': configs[role]['provider'],
+                'model': configs[role]['model'],
+                'configured': _configured(store, configs[role]),
+            }
+            for role in ROLES
+        },
+        'can_configure': bool(can_configure),
+    }
 
 
 def save_config(store, data):
@@ -178,15 +186,55 @@ def _validate_output(stage, value):
     return value
 
 
-async def _http_text(config, instruction, material):
-    request = {'model': config['model'], 'messages': [{'role': 'system', 'content': instruction},
-                {'role': 'user', 'content': material}], 'response_format': {'type': 'json_object'},
-               'max_tokens': MAX_TOKENS, 'stream': False}
+def parse_output(text):
+    """只补齐遗漏的尾部容器括号；不修正文、键名、引号或数据。"""
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(TIMEOUT_SECONDS, connect=15),
-                                     follow_redirects=False, trust_env=False) as client:
-            async with client.stream('POST', ENDPOINTS[config['provider']],
-                                     headers={'Authorization': 'Bearer ' + config['api_key']}, json=request) as response:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        stack = []
+        quoted = False
+        escaped = False
+        for ch in text:
+            if quoted:
+                if escaped:
+                    escaped = False
+                elif ch == '\\':
+                    escaped = True
+                elif ch == '"':
+                    quoted = False
+                continue
+            if ch == '"':
+                quoted = True
+            elif ch in '{[':
+                stack.append(ch)
+            elif ch in '}]':
+                if not stack or (stack[-1], ch) not in (('{', '}'), ('[', ']')):
+                    raise ValueError('malformed_json_structure')
+                stack.pop()
+        if quoted or not stack or len(stack) > 8:
+            raise ValueError('incomplete_json_data')
+        suffix = ''.join('}' if ch == '{' else ']' for ch in reversed(stack))
+        return json.loads(text + suffix)
+
+
+async def _http_text(config, instruction, material):
+    request = {
+        'model': config['model'],
+        'messages': [{'role': 'system', 'content': instruction}, {'role': 'user', 'content': material}],
+        'response_format': {'type': 'json_object'},
+        'max_tokens': MAX_TOKENS,
+        'stream': False,
+    }
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(TIMEOUT_SECONDS, connect=15), follow_redirects=False, trust_env=False
+        ) as client:
+            async with client.stream(
+                'POST',
+                ENDPOINTS[config['provider']],
+                headers={'Authorization': 'Bearer ' + config['api_key']},
+                json=request,
+            ) as response:
                 if response.status_code != 200:
                     raise ValueError('editor_provider_response')
                 chunks = bytearray()
@@ -210,13 +258,24 @@ async def _realtime_text(store, config, instruction, material):
     if speech['api_key']:
         headers['X-Api-Key'] = speech['api_key']
     else:
-        headers.update({'X-Api-App-ID': speech['app_id'], 'X-Api-Access-Key': speech['access_token'],
-                        'X-Api-App-Key': 'PlgvMymc7f3tQnJ6'})
-    request = {'dialog': {'system_role': instruction, 'extra': {'model': config['model'], 'input_mod': 'text',
-                'enable_volc_websearch': False}},
-               'tts': {'audio_config': {'format': 'pcm_s16le', 'sample_rate': 24000, 'channel': 1}}}
+        headers.update(
+            {
+                'X-Api-App-ID': speech['app_id'],
+                'X-Api-Access-Key': speech['access_token'],
+                'X-Api-App-Key': 'PlgvMymc7f3tQnJ6',
+            }
+        )
+    request = {
+        'dialog': {
+            'system_role': instruction,
+            'extra': {'model': config['model'], 'input_mod': 'text', 'enable_volc_websearch': False},
+        },
+        'tts': {'audio_config': {'format': 'pcm_s16le', 'sample_rate': 24000, 'channel': 1}},
+    }
     try:
-        async with connect(REALTIME_ENDPOINT, additional_headers=headers, open_timeout=15, max_size=MAX_RESPONSE_BYTES) as ws:
+        async with connect(
+            REALTIME_ENDPOINT, additional_headers=headers, open_timeout=15, max_size=MAX_RESPONSE_BYTES
+        ) as ws:
             try:
                 await ws.send(encode(1, {}))
                 if decode(await ws.recv())['event'] != 50:
@@ -287,5 +346,12 @@ async def generate_editor(store, stage, payload):
         json.dumps(output, allow_nan=False)
     except (ValueError, TypeError, RecursionError, KeyError):
         raise ValueError('invalid_editor_output') from None
-    return {'output': output, 'metadata': {'provider': config['provider'], 'model': config['model'],
-            'prompt_version': PROMPT_VERSION, 'prompt_hash': prompt_hash(stage)}}
+    return {
+        'output': output,
+        'metadata': {
+            'provider': config['provider'],
+            'model': config['model'],
+            'prompt_version': PROMPT_VERSION,
+            'prompt_hash': prompt_hash(stage),
+        },
+    }

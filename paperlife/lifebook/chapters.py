@@ -1,20 +1,9 @@
 """章节版本与人工发布；确认版本不可变，当前出版物仅保存指针。"""
+
 import json
 import uuid
 
 from .materials import ConflictError, stale
-
-
-def migrate(db):
-    db.executescript('''
-        CREATE TABLE IF NOT EXISTS material_revisions(source TEXT NOT NULL,version INTEGER NOT NULL,text TEXT NOT NULL,editor INTEGER,created_at TEXT DEFAULT CURRENT_TIMESTAMP,PRIMARY KEY(source,version));
-        CREATE TABLE IF NOT EXISTS chapters(id TEXT PRIMARY KEY,profile TEXT NOT NULL,title TEXT NOT NULL,brief TEXT NOT NULL DEFAULT '',published_version_id TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
-        CREATE TABLE IF NOT EXISTS chapter_versions(id TEXT PRIMARY KEY,chapter TEXT NOT NULL,number INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'draft',edit_version INTEGER NOT NULL DEFAULT 0,title TEXT NOT NULL,body TEXT NOT NULL,paragraphs TEXT NOT NULL,evidence TEXT NOT NULL,sources TEXT NOT NULL,source_refs TEXT NOT NULL,source_hash TEXT NOT NULL,metadata TEXT NOT NULL,base_published_id TEXT,job TEXT UNIQUE,confirmed_by INTEGER,confirmed_at TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,UNIQUE(chapter,number));
-        CREATE TABLE IF NOT EXISTS writing_jobs(id TEXT PRIMARY KEY,profile TEXT NOT NULL,chapter TEXT,kind TEXT NOT NULL,requester INTEGER,request_key TEXT UNIQUE NOT NULL,snapshot TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',stage TEXT NOT NULL DEFAULT 'pending',checkpoint TEXT NOT NULL DEFAULT '{}',attempts INTEGER NOT NULL DEFAULT 0,next_run REAL NOT NULL DEFAULT 0,lease_until REAL NOT NULL DEFAULT 0,lease_token TEXT NOT NULL DEFAULT '',error TEXT NOT NULL DEFAULT '',version_id TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,completed_at TEXT);
-        CREATE INDEX IF NOT EXISTS writing_jobs_pending ON writing_jobs(status,next_run);
-        CREATE INDEX IF NOT EXISTS chapters_profile ON chapters(profile);
-        CREATE INDEX IF NOT EXISTS chapter_versions_chapter ON chapter_versions(chapter,number);
-    ''')
 
 
 def chapter(store, ident, db=None):
@@ -55,7 +44,10 @@ def detail(store, ident, drafts=True):
 
 def published(store, profile):
     with store.db() as db:
-        rows = db.execute("SELECT v.* FROM chapters c JOIN chapter_versions v ON c.published_version_id=v.id WHERE c.profile=? AND v.status='confirmed' ORDER BY c.created_at,c.id", (profile,)).fetchall()
+        rows = db.execute(
+            "SELECT v.* FROM chapters c JOIN chapter_versions v ON c.published_version_id=v.id WHERE c.profile=? AND v.status='confirmed' ORDER BY c.created_at,c.id",
+            (profile,),
+        ).fetchall()
         # 原始素材版本属于证据链；不能用最新校订覆盖旧稿的来源快照。
         return [version(store, r, profile, db) for r in rows]
 
@@ -67,14 +59,23 @@ def listing(store, profile, drafts=True):
             c = dict(row)
             if not drafts and not c['published_version_id']:
                 continue
-            versions = db.execute('SELECT * FROM chapter_versions WHERE chapter=? ORDER BY number DESC', (c['id'],)).fetchall()
+            versions = db.execute(
+                'SELECT * FROM chapter_versions WHERE chapter=? ORDER BY number DESC', (c['id'],)
+            ).fetchall()
             visible = [v for v in versions if drafts or v['status'] == 'confirmed']
             pub = next((v for v in versions if v['id'] == c['published_version_id']), None)
             latest = visible[0] if visible else None
-            result.append({**c, 'published_version': pub['number'] if pub else None,
-                           'latest_version': latest['number'] if latest else None,
-                           'draft_count': sum(v['status'] == 'draft' for v in visible),
-                           'stale': stale(store, profile, json.loads(latest['source_refs']), latest['source_hash'], db) if latest else False})
+            result.append(
+                {
+                    **c,
+                    'published_version': pub['number'] if pub else None,
+                    'latest_version': latest['number'] if latest else None,
+                    'draft_count': sum(v['status'] == 'draft' for v in visible),
+                    'stale': stale(store, profile, json.loads(latest['source_refs']), latest['source_hash'], db)
+                    if latest
+                    else False,
+                }
+            )
         return result
 
 
@@ -84,15 +85,25 @@ def edit(store, ident, vid, title, body, edit_version):
         row = db.execute('SELECT * FROM chapter_versions WHERE id=? AND chapter=?', (vid, ident)).fetchone()
         if not row or row['status'] != 'draft' or row['edit_version'] != edit_version:
             raise ConflictError('只能编辑最新草稿；已确认版本保持不变')
-        metadata = json.loads(row['metadata']); metadata['human_edited'] = True
+        metadata = json.loads(row['metadata'])
+        metadata['human_edited'] = True
         metadata['audit_scope'] = 'model_draft_before_human_edit'
         # 人工改段落以后不能继续声称旧引文与新段落逐段对齐。
         evidence = json.loads(row['evidence'])
         for e in evidence:
             e.pop('paragraph', None)
         paragraphs = [{'text': p, 'citations': []} for p in body.split('\n\n') if p.strip()]
-        db.execute('UPDATE chapter_versions SET title=?,body=?,paragraphs=?,evidence=?,edit_version=edit_version+1,metadata=? WHERE id=?',
-                   (title, body, json.dumps(paragraphs,ensure_ascii=False), json.dumps(evidence,ensure_ascii=False), json.dumps(metadata, ensure_ascii=False), vid))
+        db.execute(
+            'UPDATE chapter_versions SET title=?,body=?,paragraphs=?,evidence=?,edit_version=edit_version+1,metadata=? WHERE id=?',
+            (
+                title,
+                body,
+                json.dumps(paragraphs, ensure_ascii=False),
+                json.dumps(evidence, ensure_ascii=False),
+                json.dumps(metadata, ensure_ascii=False),
+                vid,
+            ),
+        )
         updated = db.execute('SELECT * FROM chapter_versions WHERE id=?', (vid,)).fetchone()
         return version(store, updated, chapter(store, ident, db)['profile'], db)
 
@@ -108,6 +119,11 @@ def confirm(store, ident, vid, edit_version, user):
             raise ConflictError('已有另一版本收入书中，请以当前版为基础重新生成')
         if stale(store, c['profile'], json.loads(row['source_refs']), row['source_hash'], db):
             raise ConflictError('来源素材已校订，请生成新版本再确认；已确认内容不变')
-        db.execute("UPDATE chapter_versions SET status='confirmed',confirmed_by=?,confirmed_at=CURRENT_TIMESTAMP WHERE id=?", (user, vid))
+        db.execute(
+            "UPDATE chapter_versions SET status='confirmed',confirmed_by=?,confirmed_at=CURRENT_TIMESTAMP WHERE id=?",
+            (user, vid),
+        )
         db.execute('UPDATE chapters SET published_version_id=? WHERE id=?', (vid, ident))
-        return version(store, db.execute('SELECT * FROM chapter_versions WHERE id=?', (vid,)).fetchone(), c['profile'], db)
+        return version(
+            store, db.execute('SELECT * FROM chapter_versions WHERE id=?', (vid,)).fetchone(), c['profile'], db
+        )

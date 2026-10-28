@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Callable
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import HTTPException, Request, Response
 from fastapi.routing import APIRoute
-
 
 
 class PrivateRoute(APIRoute):

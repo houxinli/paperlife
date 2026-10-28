@@ -1,4 +1,5 @@
 """独立数据库与私有音频存储，不复用交易账户权限。"""
+
 import json
 import hashlib
 import secrets
@@ -14,45 +15,18 @@ class Store:
     def __init__(self, root: Path):
         self.root = root
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        from .schema import migrate
+
         with self.db() as db:
-            db.executescript('''
-                CREATE TABLE IF NOT EXISTS profiles(id TEXT PRIMARY KEY, name TEXT NOT NULL, context TEXT NOT NULL, owner INTEGER NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
-                CREATE TABLE IF NOT EXISTS members(profile TEXT, user INTEGER, role TEXT, PRIMARY KEY(profile,user));
-                CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, profile TEXT, user INTEGER, topic TEXT, title TEXT, status TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, edited_text TEXT DEFAULT '', version INTEGER DEFAULT 0);
-                CREATE TABLE IF NOT EXISTS quality_flags(session TEXT,turn INTEGER,code TEXT,reason TEXT,ask_now INTEGER,seconds REAL,PRIMARY KEY(session,turn,code));
-                CREATE TABLE IF NOT EXISTS voice_metrics(id INTEGER PRIMARY KEY,session TEXT,kind TEXT,value_ms REAL,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
-                CREATE TABLE IF NOT EXISTS turns(id INTEGER PRIMARY KEY, session TEXT, role TEXT, text TEXT, seconds REAL);
-                CREATE TABLE IF NOT EXISTS interview_preferences(id INTEGER PRIMARY KEY, profile TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, session TEXT NOT NULL, turn INTEGER NOT NULL, source_text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(session,turn,key));
-                CREATE UNIQUE INDEX IF NOT EXISTS interview_preferences_active_key ON interview_preferences(profile,key) WHERE status='active';
-                CREATE TABLE IF NOT EXISTS interview_preference_turns(session TEXT NOT NULL, turn INTEGER NOT NULL, PRIMARY KEY(session,turn));
-                CREATE TABLE IF NOT EXISTS interview_naming_answers(session TEXT PRIMARY KEY, profile TEXT NOT NULL, turn INTEGER NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
-                CREATE TABLE IF NOT EXISTS narrator_links(id INTEGER PRIMARY KEY, profile TEXT NOT NULL, token_hash TEXT UNIQUE NOT NULL, expires REAL NOT NULL, revoked INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
-                CREATE TABLE IF NOT EXISTS sources(id TEXT PRIMARY KEY, profile TEXT NOT NULL, title TEXT NOT NULL, text TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
-                CREATE TABLE IF NOT EXISTS items(id TEXT PRIMARY KEY, profile TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, answer TEXT DEFAULT '', status TEXT DEFAULT 'draft', source_ids TEXT DEFAULT '[]', time_text TEXT DEFAULT '', people TEXT DEFAULT '', place TEXT DEFAULT '', certainty TEXT DEFAULT 'unverified', version INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
-                CREATE TABLE IF NOT EXISTS item_revisions(item TEXT, version INTEGER, snapshot TEXT, editor INTEGER, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
-                CREATE TABLE IF NOT EXISTS processing_jobs(session TEXT PRIMARY KEY, profile TEXT NOT NULL, input_hash TEXT NOT NULL, snapshot TEXT NOT NULL, status TEXT DEFAULT 'pending', attempts INTEGER DEFAULT 0, lease_until REAL DEFAULT 0, lease_token TEXT DEFAULT '', next_run REAL DEFAULT 0, progress INTEGER DEFAULT 0, total INTEGER DEFAULT 0, outputs TEXT DEFAULT '[]', error TEXT DEFAULT '', created_at TEXT DEFAULT CURRENT_TIMESTAMP, completed_at TEXT);
-                CREATE TABLE IF NOT EXISTS revisions(session TEXT, version INTEGER, text TEXT, editor INTEGER, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
-            ''')
-            if 'voice_dialect' not in {r['name'] for r in db.execute('PRAGMA table_info(profiles)')}:
-                db.execute("ALTER TABLE profiles ADD COLUMN voice_dialect TEXT DEFAULT 'sichuan'")
-            if 'interviewer_name_asked' not in {r['name'] for r in db.execute('PRAGMA table_info(profiles)')}:
-                db.execute('ALTER TABLE profiles ADD COLUMN interviewer_name_asked INTEGER NOT NULL DEFAULT 0')
-            if 'lease_token' not in {r['name'] for r in db.execute('PRAGMA table_info(processing_jobs)')}:
-                db.execute("ALTER TABLE processing_jobs ADD COLUMN lease_token TEXT DEFAULT ''")
-            columns={r['name'] for r in db.execute('PRAGMA table_info(items)')}
-            for name, definition in [('evidence',"TEXT DEFAULT '[]'"),('generated_job',"TEXT DEFAULT ''"),('input_hash',"TEXT DEFAULT ''"),('model',"TEXT DEFAULT ''"),('generation_metadata',"TEXT DEFAULT '{}'"),('source_snapshot',"TEXT DEFAULT '[]'")]:
-                if name not in columns:db.execute(f'ALTER TABLE items ADD COLUMN {name} {definition}')
-            # 已有档案在升级时冻结当前背景，之后编辑不会改写这个来源快照。
-            db.execute("INSERT INTO sources(id,profile,title,text) SELECT lower(hex(randomblob(16))),p.id,'导入的原始访谈',p.context FROM profiles p WHERE p.context!='' AND NOT EXISTS(SELECT 1 FROM sources s WHERE s.profile=p.id)")
-            from .chapters import migrate
+            # WAL 让读者与后台写入互不阻塞；该模式持久记录在数据库文件中。
+            db.execute('PRAGMA journal_mode=WAL')
             migrate(db)
-            from .listening_store import migrate as migrate_listening
-            migrate_listening(db)
 
     @contextmanager
     def db(self):
         db = sqlite3.connect(self.root / 'life.sqlite3', timeout=10)
         db.row_factory = sqlite3.Row
+        db.execute('PRAGMA busy_timeout=10000')
         try:
             with db:
                 yield db
@@ -62,25 +36,110 @@ class Store:
     def create_profile(self, user, name, context, voice_dialect="sichuan"):
         ident = uuid.uuid4().hex
         with self.db() as db:
-            db.execute('INSERT INTO profiles(id,name,context,owner,voice_dialect) VALUES(?,?,?,?,?)', (ident,name,context,user,voice_dialect))
-            db.execute('INSERT INTO members VALUES(?,?,?)', (ident,user,'owner'))
+            db.execute(
+                'INSERT INTO profiles(id,name,context,owner,voice_dialect) VALUES(?,?,?,?,?)',
+                (ident, name, context, user, voice_dialect),
+            )
+            db.execute('INSERT INTO members VALUES(?,?,?)', (ident, user, 'owner'))
             if context:
-                db.execute('INSERT INTO sources(id,profile,title,text) VALUES(?,?,?,?)',(uuid.uuid4().hex,ident,'导入的原始访谈',context))
+                db.execute(
+                    'INSERT INTO sources(id,profile,title,text) VALUES(?,?,?,?)',
+                    (uuid.uuid4().hex, ident, '导入的原始访谈', context),
+                )
         return self.profile(ident, user)
 
     def profile(self, ident, user):
         with self.db() as db:
-            row = db.execute('SELECT p.*, m.role FROM profiles p JOIN members m ON p.id=m.profile WHERE p.id=? AND m.user=?', (ident,user)).fetchone()
+            row = db.execute(
+                'SELECT p.*, m.role FROM profiles p JOIN members m ON p.id=m.profile WHERE p.id=? AND m.user=?',
+                (ident, user),
+            ).fetchone()
             return dict(row) if row else None
 
     def profiles(self, user):
         with self.db() as db:
-            return [dict(r) for r in db.execute('SELECT p.id,p.name,p.created_at,m.role FROM profiles p JOIN members m ON p.id=m.profile WHERE m.user=? ORDER BY p.created_at', (user,))]
+            return [
+                dict(r)
+                for r in db.execute(
+                    'SELECT p.id,p.name,p.created_at,m.role FROM profiles p JOIN members m ON p.id=m.profile WHERE m.user=? ORDER BY p.created_at',
+                    (user,),
+                )
+            ]
+
+    def update_profile(self, ident, name, context, voice_dialect=None):
+        with self.db() as db:
+            db.execute(
+                'UPDATE profiles SET name=?,context=?,voice_dialect=COALESCE(?,voice_dialect) WHERE id=?',
+                (name, context, voice_dialect, ident),
+            )
+            # 空档案第一次填写背景时冻结为来源；之后的编辑不改写这个快照。
+            if context and not db.execute('SELECT 1 FROM sources WHERE profile=?', (ident,)).fetchone():
+                db.execute(
+                    'INSERT INTO sources(id,profile,title,text) VALUES(?,?,?,?)',
+                    (uuid.uuid4().hex, ident, '首次导入的原始访谈', context),
+                )
+
+    def members(self, profile):
+        with self.db() as db:
+            return [dict(r) for r in db.execute('SELECT user,role FROM members WHERE profile=?', (profile,))]
+
+    def set_member(self, profile, user, role):
+        with self.db() as db:
+            db.execute(
+                'INSERT INTO members VALUES(?,?,?) ON CONFLICT(profile,user) DO UPDATE SET role=excluded.role',
+                (profile, user, role),
+            )
+
+    def remove_member(self, profile, user):
+        with self.db() as db:
+            db.execute('DELETE FROM members WHERE profile=? AND user=?', (profile, user))
+
+    def sessions(self, profile):
+        with self.db() as db:
+            return [
+                dict(r)
+                for r in db.execute(
+                    'SELECT id,title,status,created_at,version,mode FROM sessions WHERE profile=? ORDER BY created_at DESC',
+                    (profile,),
+                )
+            ]
+
+    def sessions_last_day(self, user):
+        with self.db() as db:
+            return db.execute(
+                "SELECT count(*) FROM sessions WHERE user=? AND created_at>datetime('now','-1 day')", (user,)
+            ).fetchone()[0]
+
+    def quality(self, session):
+        with self.db() as db:
+            return {
+                'flags': [
+                    dict(r)
+                    for r in db.execute(
+                        'SELECT turn,code,reason,ask_now,seconds FROM quality_flags WHERE session=?', (session,)
+                    )
+                ],
+                'metrics': [
+                    dict(r) for r in db.execute('SELECT kind,value_ms FROM voice_metrics WHERE session=?', (session,))
+                ],
+            }
+
+    def revisions(self, session):
+        with self.db() as db:
+            return [
+                dict(r)
+                for r in db.execute(
+                    'SELECT version,text,created_at FROM revisions WHERE session=? ORDER BY version DESC', (session,)
+                )
+            ]
 
     def create_session(self, profile, user, topic):
         ident = uuid.uuid4().hex
         with self.db() as db:
-            db.execute('INSERT INTO sessions(id,profile,user,topic,title,status) VALUES(?,?,?,?,?,?)', (ident,profile,user,topic,topic,'connecting'))
+            db.execute(
+                'INSERT INTO sessions(id,profile,user,topic,title,status) VALUES(?,?,?,?,?,?)',
+                (ident, profile, user, topic, topic, 'connecting'),
+            )
         return self.session(ident)
 
     def session(self, ident):
@@ -91,66 +150,104 @@ class Store:
     def add_turn(self, ident, role, text, seconds):
         if text.strip():
             with self.db() as db:
-                return db.execute('INSERT INTO turns(session,role,text,seconds) VALUES(?,?,?,?)', (ident,role,text,seconds)).lastrowid
+                return db.execute(
+                    'INSERT INTO turns(session,role,text,seconds) VALUES(?,?,?,?)', (ident, role, text, seconds)
+                ).lastrowid
 
     def finish_session(self, ident, status):
         with self.db() as db:
-            db.execute('UPDATE sessions SET status=? WHERE id=?', (status,ident))
+            db.execute('UPDATE sessions SET status=? WHERE id=?', (status, ident))
 
     def turns(self, ident):
         with self.db() as db:
-            return [dict(r) for r in db.execute('SELECT id,role,text,seconds FROM turns WHERE session=? ORDER BY id', (ident,))]
+            return [
+                dict(r)
+                for r in db.execute('SELECT id,role,text,seconds FROM turns WHERE session=? ORDER BY id', (ident,))
+            ]
 
     def record_preferences(self, session_id, turn_id, text, *, naming_target=None):
         """仅记录已经落库的最终 user 原文；重复/撤销后重放不会复活偏好。"""
         from .preferences import extract_preferences
+
         requested = extract_preferences(text, naming_target=naming_target)
         changed = []
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')
-            source = db.execute('SELECT s.profile,t.text FROM turns t JOIN sessions s ON s.id=t.session WHERE t.id=? AND t.session=? AND t.role=? AND s.mode="dialogue"',
-                                (turn_id, session_id, 'user')).fetchone()
+            source = db.execute(
+                'SELECT s.profile,t.text FROM turns t JOIN sessions s ON s.id=t.session WHERE t.id=? AND t.session=? AND t.role=? AND s.mode="dialogue"',
+                (turn_id, session_id, 'user'),
+            ).fetchone()
             if not source or source['text'] != text:
                 return []
             # Only realtime's first final answer to its opening naming question
             # consumes this opportunity. Failed connects/interim ASR do not.
             if naming_target == 'interviewer_name':
                 db.execute('UPDATE profiles SET interviewer_name_asked=1 WHERE id=?', (source['profile'],))
-                db.execute('INSERT OR IGNORE INTO interview_naming_answers(session,profile,turn) VALUES(?,?,?)',
-                           (session_id, source['profile'], turn_id))
-            processed = db.execute('INSERT OR IGNORE INTO interview_preference_turns(session,turn) VALUES(?,?)', (session_id, turn_id))
+                db.execute(
+                    'INSERT OR IGNORE INTO interview_naming_answers(session,profile,turn) VALUES(?,?,?)',
+                    (session_id, source['profile'], turn_id),
+                )
+            processed = db.execute(
+                'INSERT OR IGNORE INTO interview_preference_turns(session,turn) VALUES(?,?)', (session_id, turn_id)
+            )
             if processed.rowcount == 0:
                 return []
             for key, value in requested.items():
-                if db.execute('SELECT 1 FROM interview_preferences WHERE session=? AND turn=? AND key=?',
-                              (session_id, turn_id, key)).fetchone():
+                if db.execute(
+                    'SELECT 1 FROM interview_preferences WHERE session=? AND turn=? AND key=?',
+                    (session_id, turn_id, key),
+                ).fetchone():
                     continue
-                current = db.execute("SELECT value FROM interview_preferences WHERE profile=? AND key=? AND status='active'",
-                                     (source['profile'], key)).fetchone()
+                current = db.execute(
+                    "SELECT value FROM interview_preferences WHERE profile=? AND key=? AND status='active'",
+                    (source['profile'], key),
+                ).fetchone()
                 if current and current['value'] == value:
                     continue
-                db.execute("UPDATE interview_preferences SET status='superseded',updated_at=CURRENT_TIMESTAMP WHERE profile=? AND key=? AND status='active'",
-                           (source['profile'], key))
-                result = db.execute('INSERT INTO interview_preferences(profile,key,value,session,turn,source_text) VALUES(?,?,?,?,?,?)',
-                                    (source['profile'], key, value, session_id, turn_id, text[:300]))
-                changed.append(dict(db.execute('SELECT id,profile,key,value,session,turn,source_text,created_at FROM interview_preferences WHERE id=?',
-                                               (result.lastrowid,)).fetchone()))
+                db.execute(
+                    "UPDATE interview_preferences SET status='superseded',updated_at=CURRENT_TIMESTAMP WHERE profile=? AND key=? AND status='active'",
+                    (source['profile'], key),
+                )
+                result = db.execute(
+                    'INSERT INTO interview_preferences(profile,key,value,session,turn,source_text) VALUES(?,?,?,?,?,?)',
+                    (source['profile'], key, value, session_id, turn_id, text[:300]),
+                )
+                changed.append(
+                    dict(
+                        db.execute(
+                            'SELECT id,profile,key,value,session,turn,source_text,created_at FROM interview_preferences WHERE id=?',
+                            (result.lastrowid,),
+                        ).fetchone()
+                    )
+                )
         return changed
 
     def preferences(self, profile_id):
         with self.db() as db:
-            return [dict(r) for r in db.execute("SELECT id,profile,key,value,session,turn,source_text,created_at FROM interview_preferences WHERE profile=? AND status='active' ORDER BY id", (profile_id,))]
+            return [
+                dict(r)
+                for r in db.execute(
+                    "SELECT id,profile,key,value,session,turn,source_text,created_at FROM interview_preferences WHERE profile=? AND status='active' ORDER BY id",
+                    (profile_id,),
+                )
+            ]
 
     def revoke_preference(self, profile_id, preference_id):
         with self.db() as db:
-            result = db.execute("UPDATE interview_preferences SET status='revoked',updated_at=CURRENT_TIMESTAMP WHERE id=? AND profile=? AND status='active'",
-                                (preference_id, profile_id))
+            result = db.execute(
+                "UPDATE interview_preferences SET status='revoked',updated_at=CURRENT_TIMESTAMP WHERE id=? AND profile=? AND status='active'",
+                (preference_id, profile_id),
+            )
             return result.rowcount == 1
 
     def provider(self):
         path = self.root / 'provider.json'
         data = json.loads(path.read_text()) if path.exists() else {}
-        for field, key in [('app_id','LIFE_VOLC_APP_ID'),('access_token','LIFE_VOLC_ACCESS_TOKEN'),('api_key','LIFE_VOLC_API_KEY')]:
+        for field, key in [
+            ('app_id', 'LIFE_VOLC_APP_ID'),
+            ('access_token', 'LIFE_VOLC_ACCESS_TOKEN'),
+            ('api_key', 'LIFE_VOLC_API_KEY'),
+        ]:
             if os.environ.get(key):
                 data[field] = os.environ[key]
         return data
@@ -172,57 +269,104 @@ class Store:
     def create_link(self, profile):
         token = secrets.token_urlsafe(32)
         digest = hashlib.sha256(token.encode()).hexdigest()
-        expires = time.time()+180*86400
+        expires = time.time() + 180 * 86400
         with self.db() as db:
-            result = db.execute('INSERT INTO narrator_links(profile,token_hash,expires) VALUES(?,?,?)', (profile,digest,expires))
-            return {'id':result.lastrowid,'token':token,'expires':expires}
+            result = db.execute(
+                'INSERT INTO narrator_links(profile,token_hash,expires) VALUES(?,?,?)', (profile, digest, expires)
+            )
+            return {'id': result.lastrowid, 'token': token, 'expires': expires}
 
     def link(self, token=None, link_id=None):
         with self.db() as db:
             if token:
-                row = db.execute('SELECT * FROM narrator_links WHERE token_hash=? AND revoked=0 AND expires>?', (hashlib.sha256(token.encode()).hexdigest(),time.time())).fetchone()
+                row = db.execute(
+                    'SELECT * FROM narrator_links WHERE token_hash=? AND revoked=0 AND expires>?',
+                    (hashlib.sha256(token.encode()).hexdigest(), time.time()),
+                ).fetchone()
             else:
-                row = db.execute('SELECT * FROM narrator_links WHERE id=? AND revoked=0 AND expires>?', (link_id,time.time())).fetchone()
+                row = db.execute(
+                    'SELECT * FROM narrator_links WHERE id=? AND revoked=0 AND expires>?', (link_id, time.time())
+                ).fetchone()
             if not row:
                 return None
-            profile = db.execute('SELECT * FROM profiles WHERE id=?',(row['profile'],)).fetchone()
-            return {**dict(row),'profile_data':dict(profile)} if profile else None
+            profile = db.execute('SELECT * FROM profiles WHERE id=?', (row['profile'],)).fetchone()
+            return {**dict(row), 'profile_data': dict(profile)} if profile else None
 
     def item(self, ident):
         with self.db() as db:
-            row=db.execute('SELECT * FROM items WHERE id=?',(ident,)).fetchone()
-            if not row:return None
-            result=dict(row)
-            for key, fallback in [('source_ids','[]'),('evidence','[]'),('generation_metadata','{}'),('source_snapshot','[]')]:
-                result[key]=json.loads(result.get(key) or fallback)
+            row = db.execute('SELECT * FROM items WHERE id=?', (ident,)).fetchone()
+            if not row:
+                return None
+            result = dict(row)
+            for key, fallback in [
+                ('source_ids', '[]'),
+                ('evidence', '[]'),
+                ('generation_metadata', '{}'),
+                ('source_snapshot', '[]'),
+            ]:
+                result[key] = json.loads(result.get(key) or fallback)
             from .materials import item_stale
-            result['stale']=item_stale(self,result,db)
+
+            result['stale'] = item_stale(self, result, db)
             return result
 
     def add_item(self, profile, data):
-        ident=uuid.uuid4().hex
+        ident = uuid.uuid4().hex
         with self.db() as db:
-            db.execute('INSERT INTO items(id,profile,kind,title,body,answer,status,source_ids,time_text,people,place,certainty) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
-                       (ident,profile,data['kind'],data['title'],data['body'],data.get('answer',''),data.get('status','draft'),json.dumps(data.get('source_ids',[])),data.get('time_text',''),data.get('people',''),data.get('place',''),data.get('certainty','unverified')))
+            db.execute(
+                'INSERT INTO items(id,profile,kind,title,body,answer,status,source_ids,time_text,people,place,certainty) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+                (
+                    ident,
+                    profile,
+                    data['kind'],
+                    data['title'],
+                    data['body'],
+                    data.get('answer', ''),
+                    data.get('status', 'draft'),
+                    json.dumps(data.get('source_ids', [])),
+                    data.get('time_text', ''),
+                    data.get('people', ''),
+                    data.get('place', ''),
+                    data.get('certainty', 'unverified'),
+                ),
+            )
         return self.item(ident)
 
     def suggest_questions(self, session_id):
         import re
-        session=self.session(session_id)
-        if not session:return
-        for turn in self.turns(session_id):
-            text=turn['text']
-            if turn['role']=='user' and re.search(r'不确定|记不清|不知道.*字|[（(]音[）)]|听不清',text):
-                self.add_item(session['profile'],{'kind':'question','title':'这段回忆有待确认','body':text[:2000],'status':'open','source_ids':[session_id]})
 
-    def record_quality(self,session,turn,text,seconds):
-        from datetime import datetime,timezone
+        session = self.session(session_id)
+        if not session:
+            return
+        for turn in self.turns(session_id):
+            text = turn['text']
+            if turn['role'] == 'user' and re.search(r'不确定|记不清|不知道.*字|[（(]音[）)]|听不清', text):
+                self.add_item(
+                    session['profile'],
+                    {
+                        'kind': 'question',
+                        'title': '这段回忆有待确认',
+                        'body': text[:2000],
+                        'status': 'open',
+                        'source_ids': [session_id],
+                    },
+                )
+
+    def record_quality(self, session, turn, text, seconds):
+        from datetime import datetime, timezone
         from .quality import inspect_transcript
-        flags=inspect_transcript(text,datetime.now(timezone.utc).year)
+
+        flags = inspect_transcript(text, datetime.now(timezone.utc).year)
         with self.db() as db:
-            for f in flags:db.execute('INSERT OR IGNORE INTO quality_flags VALUES(?,?,?,?,?,?)',(session,turn,f['code'],f['reason'],int(f['ask_now']),seconds))
+            for f in flags:
+                db.execute(
+                    'INSERT OR IGNORE INTO quality_flags VALUES(?,?,?,?,?,?)',
+                    (session, turn, f['code'], f['reason'], int(f['ask_now']), seconds),
+                )
         return flags
 
-    def metric(self,session,kind,value_ms):
-        if kind not in ('connect_ms','response_first_audio_ms') or not 0<=value_ms<=120000:return
-        with self.db() as db:db.execute('INSERT INTO voice_metrics(session,kind,value_ms) VALUES(?,?,?)',(session,kind,value_ms))
+    def metric(self, session, kind, value_ms):
+        if kind not in ('connect_ms', 'response_first_audio_ms') or not 0 <= value_ms <= 120000:
+            return
+        with self.db() as db:
+            db.execute('INSERT INTO voice_metrics(session,kind,value_ms) VALUES(?,?,?)', (session, kind, value_ms))

@@ -1,4 +1,5 @@
 """持久化编辑队列：素材整理与跨会话写作解耦，产物全部待人工确认。"""
+
 import asyncio
 import json
 import time
@@ -13,16 +14,37 @@ def _json(value):
 
 
 def _public_job(row):
-    return {key: row[key] for key in ('id', 'profile', 'chapter', 'kind', 'status', 'stage', 'attempts', 'error', 'version_id', 'created_at', 'completed_at')}
+    return {
+        key: row[key]
+        for key in (
+            'id',
+            'profile',
+            'chapter',
+            'kind',
+            'status',
+            'stage',
+            'attempts',
+            'error',
+            'version_id',
+            'created_at',
+            'completed_at',
+        )
+    }
 
 
 def jobs(store, profile):
     with store.db() as db:
-        return [_public_job(r) for r in db.execute('SELECT * FROM writing_jobs WHERE profile=? ORDER BY created_at DESC,rowid DESC LIMIT 100', (profile,))]
+        return [
+            _public_job(r)
+            for r in db.execute(
+                'SELECT * FROM writing_jobs WHERE profile=? ORDER BY created_at DESC,rowid DESC LIMIT 100', (profile,)
+            )
+        ]
 
 
 def _enqueue(store, profile, kind, refs, requester, chapter=None, brief=None):
     from .editor_models import public_config
+
     configuration = public_config(store, False)
     configuration.pop('can_configure', None)
     with store.db() as db:
@@ -34,16 +56,26 @@ def _enqueue(store, profile, kind, refs, requester, chapter=None, brief=None):
             if not c or c['profile'] != profile:
                 raise MaterialError('章节不属于当前档案')
             count = db.execute('SELECT count(*) FROM chapter_versions WHERE chapter=?', (chapter,)).fetchone()[0]
-            prior = db.execute('SELECT title,body FROM chapter_versions WHERE id=?', (c['published_version_id'],)).fetchone()
-            data.update({'chapter_title': c['title'], 'brief': c['brief'] if brief is None else brief,
-                         'base_published_id': c['published_version_id'],
-                         'previous_version': dict(prior) if prior else None})
+            prior = db.execute(
+                'SELECT title,body FROM chapter_versions WHERE id=?', (c['published_version_id'],)
+            ).fetchone()
+            data.update(
+                {
+                    'chapter_title': c['title'],
+                    'brief': c['brief'] if brief is None else brief,
+                    'base_published_id': c['published_version_id'],
+                    'previous_version': dict(prior) if prior else None,
+                }
+            )
         data['configuration'] = configuration
-        key = digest({'profile': profile, 'kind': kind, 'chapter': chapter,
-                      'snapshot': data, 'existing_versions': count})
+        key = digest(
+            {'profile': profile, 'kind': kind, 'chapter': chapter, 'snapshot': data, 'existing_versions': count}
+        )
         ident = uuid.uuid4().hex
-        db.execute('INSERT OR IGNORE INTO writing_jobs(id,profile,chapter,kind,requester,request_key,snapshot) VALUES(?,?,?,?,?,?,?)',
-                   (ident, profile, chapter, kind, requester, key, _json(data)))
+        db.execute(
+            'INSERT OR IGNORE INTO writing_jobs(id,profile,chapter,kind,requester,request_key,snapshot) VALUES(?,?,?,?,?,?,?)',
+            (ident, profile, chapter, kind, requester, key, _json(data)),
+        )
         return _public_job(db.execute('SELECT * FROM writing_jobs WHERE request_key=?', (key,)).fetchone())
 
 
@@ -71,48 +103,71 @@ def enqueue_chapter(store, profile, chapter, refs, requester, brief=None):
 
 def retry(store, ident):
     with store.db() as db:
-        db.execute("UPDATE writing_jobs SET status='pending',attempts=0,next_run=0,error='',lease_until=0 WHERE id=? AND status='failed'", (ident,))
+        db.execute(
+            "UPDATE writing_jobs SET status='pending',attempts=0,next_run=0,error='',lease_until=0 WHERE id=? AND status='failed'",
+            (ident,),
+        )
         row = db.execute('SELECT * FROM writing_jobs WHERE id=?', (ident,)).fetchone()
         return _public_job(row) if row else None
 
 
 def claim(store):
-    now = time.time(); token = uuid.uuid4().hex
+    now = time.time()
+    token = uuid.uuid4().hex
     with store.db() as db:
         db.execute('BEGIN IMMEDIATE')
-        db.execute("UPDATE writing_jobs SET status='failed',error='整理中断，请重试' WHERE status='running' AND lease_until<? AND attempts>=3", (now,))
-        row = db.execute("SELECT * FROM writing_jobs WHERE attempts<3 AND ((status='pending' AND next_run<=?) OR (status='running' AND lease_until<?)) ORDER BY created_at,rowid LIMIT 1", (now, now)).fetchone()
+        db.execute(
+            "UPDATE writing_jobs SET status='failed',error='整理中断，请重试' WHERE status='running' AND lease_until<? AND attempts>=3",
+            (now,),
+        )
+        row = db.execute(
+            "SELECT * FROM writing_jobs WHERE attempts<3 AND ((status='pending' AND next_run<=?) OR (status='running' AND lease_until<?)) ORDER BY created_at,rowid LIMIT 1",
+            (now, now),
+        ).fetchone()
         if not row:
             return None
-        db.execute("UPDATE writing_jobs SET status='running',attempts=attempts+1,lease_until=?,lease_token=? WHERE id=?", (now+600, token, row['id']))
-        return {**dict(row), 'lease_token': token, 'attempts': row['attempts']+1}
+        db.execute(
+            "UPDATE writing_jobs SET status='running',attempts=attempts+1,lease_until=?,lease_token=? WHERE id=?",
+            (now + 600, token, row['id']),
+        )
+        return {**dict(row), 'lease_token': token, 'attempts': row['attempts'] + 1}
 
 
 def _chunks(units, limit=5000):
-    current = []; size = 0
+    current = []
+    size = 0
     for unit in units:
         for offset in range(0, len(unit['text']), 3500):
-            part = {**unit, 'text': unit['text'][offset:offset+3500], 'context': unit['context'][:600]}
+            part = {**unit, 'text': unit['text'][offset : offset + 3500], 'context': unit['context'][:600]}
             n = len(_json(part))
-            if current and size+n > limit:
-                yield current; current = []; size = 0
-            current.append(part); size += n
+            if current and size + n > limit:
+                yield current
+                current = []
+                size = 0
+            current.append(part)
+            size += n
     if current:
         yield current
 
 
 def _story(output, units):
-    if not isinstance(output, dict) or not isinstance(output.get('title'), str) or not 1 <= len(output['title'].strip()) <= 200:
+    if (
+        not isinstance(output, dict)
+        or not isinstance(output.get('title'), str)
+        or not 1 <= len(output['title'].strip()) <= 200
+    ):
         raise MaterialError('无效章节标题')
     paragraphs = output.get('paragraphs')
     if not isinstance(paragraphs, list) or not 1 <= len(paragraphs) <= 30:
         raise MaterialError('章节正文为空或过长')
-    evidence = []; body = []
+    evidence = []
+    body = []
     for index, paragraph in enumerate(paragraphs, 1):
         text = paragraph.get('text') if isinstance(paragraph, dict) else None
         if not isinstance(text, str) or not text.strip() or len(text) > 6000:
             raise MaterialError('无效章节段落')
-        evidence.extend(checked_evidence(paragraph.get('citations'), units, index)); body.append(text)
+        evidence.extend(checked_evidence(paragraph.get('citations'), units, index))
+        body.append(text)
     if len('\n\n'.join(body)) > 30000:
         raise MaterialError('章节正文过长')
     return {'title': output['title'], 'paragraphs': paragraphs, 'body': '\n\n'.join(body), 'evidence': evidence}
@@ -136,15 +191,19 @@ def _extraction(output, units):
 
 async def process_one(store, generator=None):
     from .editor_models import generate_editor
+
     job = claim(store)
     if not job:
         return False
-    data = json.loads(job['snapshot']); checkpoint = json.loads(job['checkpoint'])
+    data = json.loads(job['snapshot'])
+    checkpoint = json.loads(job['checkpoint'])
 
     def save(stage):
         with store.db() as db:
-            updated = db.execute('UPDATE writing_jobs SET checkpoint=?,stage=?,lease_until=? WHERE id=? AND lease_token=? AND status=\'running\'',
-                                 (_json(checkpoint), stage, time.time()+600, job['id'], job['lease_token']))
+            updated = db.execute(
+                'UPDATE writing_jobs SET checkpoint=?,stage=?,lease_until=? WHERE id=? AND lease_token=? AND status=\'running\'',
+                (_json(checkpoint), stage, time.time() + 600, job['id'], job['lease_token']),
+            )
             if updated.rowcount != 1:
                 raise ConflictError('任务租约已失效')
 
@@ -167,7 +226,8 @@ async def process_one(store, generator=None):
             outputs = []
             for index, units in enumerate(_chunks(data['materials'])):
                 raw = await call('extract', {'materials': units}, f'extract:{index}')
-                outputs.extend(_extraction(raw, units)); save('extract')
+                outputs.extend(_extraction(raw, units))
+                save('extract')
             final = None
         else:
             payload = {k: v for k, v in data.items() if k != 'configuration'}
@@ -175,8 +235,11 @@ async def process_one(store, generator=None):
             outline = await call('outline', payload)
             if not isinstance(outline, dict) or not isinstance(outline.get('outline'), list) or not outline['outline']:
                 raise MaterialError('章节大纲为空')
-            save('outline'); payload['outline'] = outline['outline']
-            raw = await call('write', payload); _story(raw, data['materials']); save('write')
+            save('outline')
+            payload['outline'] = outline['outline']
+            raw = await call('write', payload)
+            _story(raw, data['materials'])
+            save('write')
             payload['draft'] = raw
             for audit_key, polish in [('audit', True), ('final_audit', False)]:
                 audit = await call('audit', payload, audit_key)
@@ -189,11 +252,16 @@ async def process_one(store, generator=None):
                 save(audit_key)
                 if polish:
                     polished = await call('polish', payload)
-                    _story(polished, data['materials']); save('polish'); payload['draft'] = polished
+                    _story(polished, data['materials'])
+                    save('polish')
+                    payload['draft'] = polished
             final = _story(payload['draft'], data['materials'])
-        metadata = {'steps': {k: v['metadata'] for k, v in checkpoint.items() if isinstance(v, dict) and 'metadata' in v},
-                    'source_hash': data['source_hash'], 'human_edited': False,
-                    'notice': '模型核对不替代人工确认，引用存在不等于事实已被外部证实'}
+        metadata = {
+            'steps': {k: v['metadata'] for k, v in checkpoint.items() if isinstance(v, dict) and 'metadata' in v},
+            'source_hash': data['source_hash'],
+            'human_edited': False,
+            'notice': '模型核对不替代人工确认，引用存在不等于事实已被外部证实',
+        }
         with store.db() as db:
             db.execute('BEGIN IMMEDIATE')
             active = db.execute('SELECT * FROM writing_jobs WHERE id=?', (job['id'],)).fetchone()
@@ -204,32 +272,83 @@ async def process_one(store, generator=None):
                 model = ', '.join(sorted({m['model'] for m in metadata['steps'].values()}))
                 for item in outputs:
                     source_ids = sorted({e['source_id'] for e in item['evidence']})
-                    db.execute("INSERT INTO items(id,profile,kind,title,body,status,source_ids,time_text,people,place,evidence,generated_job,input_hash,model,generation_metadata,source_snapshot) VALUES(?,?,?,?,?,'draft',?,?,?,?,?,?,?,?,?,?)",
-                               (uuid.uuid4().hex, job['profile'], item['kind'], item['title'], item['body'], _json(source_ids),
-                                item.get('time_text',''), item.get('people',''), item.get('place',''), _json(item['evidence']), job['id'],
-                                data['source_hash'], model, _json(metadata), _json(data['materials'])))
+                    db.execute(
+                        "INSERT INTO items(id,profile,kind,title,body,status,source_ids,time_text,people,place,evidence,generated_job,input_hash,model,generation_metadata,source_snapshot) VALUES(?,?,?,?,?,'draft',?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            uuid.uuid4().hex,
+                            job['profile'],
+                            item['kind'],
+                            item['title'],
+                            item['body'],
+                            _json(source_ids),
+                            item.get('time_text', ''),
+                            item.get('people', ''),
+                            item.get('place', ''),
+                            _json(item['evidence']),
+                            job['id'],
+                            data['source_hash'],
+                            model,
+                            _json(metadata),
+                            _json(data['materials']),
+                        ),
+                    )
             else:
                 version_id = uuid.uuid4().hex
-                number = db.execute('SELECT COALESCE(MAX(number),0)+1 FROM chapter_versions WHERE chapter=?', (job['chapter'],)).fetchone()[0]
-                db.execute('INSERT INTO chapter_versions(id,chapter,number,title,body,paragraphs,evidence,sources,source_refs,source_hash,metadata,base_published_id,job) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                           (version_id, job['chapter'], number, final['title'], final['body'], _json(final['paragraphs']), _json(final['evidence']),
-                            _json(data['materials']), _json(data['sources']), data['source_hash'], _json(metadata), data['base_published_id'], job['id']))
-            db.execute("UPDATE writing_jobs SET status='completed',stage='completed',version_id=?,error='',lease_until=0,completed_at=CURRENT_TIMESTAMP WHERE id=?", (version_id, job['id']))
+                number = db.execute(
+                    'SELECT COALESCE(MAX(number),0)+1 FROM chapter_versions WHERE chapter=?', (job['chapter'],)
+                ).fetchone()[0]
+                db.execute(
+                    'INSERT INTO chapter_versions(id,chapter,number,title,body,paragraphs,evidence,sources,source_refs,source_hash,metadata,base_published_id,job) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                    (
+                        version_id,
+                        job['chapter'],
+                        number,
+                        final['title'],
+                        final['body'],
+                        _json(final['paragraphs']),
+                        _json(final['evidence']),
+                        _json(data['materials']),
+                        _json(data['sources']),
+                        data['source_hash'],
+                        _json(metadata),
+                        data['base_published_id'],
+                        job['id'],
+                    ),
+                )
+            db.execute(
+                "UPDATE writing_jobs SET status='completed',stage='completed',version_id=?,error='',lease_until=0,completed_at=CURRENT_TIMESTAMP WHERE id=?",
+                (version_id, job['id']),
+            )
     except asyncio.CancelledError:
         with store.db() as db:
-            db.execute("UPDATE writing_jobs SET status='pending',attempts=attempts-1,lease_until=0 WHERE id=? AND lease_token=? AND status='running'", (job['id'], job['lease_token']))
+            db.execute(
+                "UPDATE writing_jobs SET status='pending',attempts=attempts-1,lease_until=0 WHERE id=? AND lease_token=? AND status='running'",
+                (job['id'], job['lease_token']),
+            )
         raise
     except Exception:
         with store.db() as db:
-            db.execute("UPDATE writing_jobs SET status=?,next_run=?,lease_until=0,error=? WHERE id=? AND lease_token=? AND status='running'",
-                       ('failed' if job['attempts'] >= 3 else 'pending', time.time()+30*job['attempts'],
-                        '生成未完成：模型响应、来源引用或事实核对未通过。可重试；原始资料和已确认内容保持不变。', job['id'], job['lease_token']))
+            db.execute(
+                "UPDATE writing_jobs SET status=?,next_run=?,lease_until=0,error=? WHERE id=? AND lease_token=? AND status='running'",
+                (
+                    'failed' if job['attempts'] >= 3 else 'pending',
+                    time.time() + 30 * job['attempts'],
+                    '生成未完成：模型响应、来源引用或事实核对未通过。可重试；原始资料和已确认内容保持不变。',
+                    job['id'],
+                    job['lease_token'],
+                ),
+            )
     return True
 
 
-# 只扫描新结束会话；已有旧处理任务视为已导入的历史成果，不重新调用模型。
+# 只扫描新结束会话；旧队列已完成的会话视为历史成果，不重新调用模型。
 def enqueue_missing(store):
     with store.db() as db:
-        ids = [r['id'] for r in db.execute("SELECT s.id FROM sessions s WHERE s.status IN ('ended','interrupted') AND EXISTS(SELECT 1 FROM turns t WHERE t.session=s.id AND t.role='user' AND trim(t.text)!='') AND NOT EXISTS(SELECT 1 FROM processing_jobs p WHERE p.session=s.id) AND NOT EXISTS(SELECT 1 FROM writing_jobs j WHERE j.kind='material' AND j.profile=s.profile AND json_extract(j.snapshot,'$.sources[0].id')=s.id)")]
+        ids = [
+            r['id']
+            for r in db.execute(
+                "SELECT s.id FROM sessions s WHERE s.status IN ('ended','interrupted') AND EXISTS(SELECT 1 FROM turns t WHERE t.session=s.id AND t.role='user' AND trim(t.text)!='') AND NOT EXISTS(SELECT 1 FROM processing_jobs p WHERE p.session=s.id AND p.status='completed') AND NOT EXISTS(SELECT 1 FROM writing_jobs j WHERE j.kind='material' AND j.profile=s.profile AND json_extract(j.snapshot,'$.sources[0].id')=s.id)"
+            )
+        ]
     for ident in ids:
         enqueue_session(store, ident)

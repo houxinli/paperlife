@@ -1,4 +1,5 @@
 """火山 ASR 2.0 静默旁听适配。事件是累计快照；终包才代表整段完成。"""
+
 import asyncio
 from contextlib import asynccontextmanager, suppress
 import gzip
@@ -46,9 +47,10 @@ def _credentials(store):
     try:
         data = store.provider()
         fields = {key: data.get(key, '') for key in ('api_key', 'app_id', 'access_token')}
-        if any(not isinstance(value, str) or len(value) > 2000 or
-               any(ord(char) < 33 or ord(char) > 126 for char in value)
-               for value in fields.values()):
+        if any(
+            not isinstance(value, str) or len(value) > 2000 or any(ord(char) < 33 or ord(char) > 126 for char in value)
+            for value in fields.values()
+        ):
             return {}
         return fields
     except (OSError, ValueError, TypeError, AttributeError):
@@ -62,8 +64,12 @@ def configured(store):
 
 
 def public_config(store, can_configure=False):
-    return {'enabled': _enabled(store), 'configured': configured(store),
-            'provider': 'volc_seedasr', 'can_configure': bool(can_configure)}
+    return {
+        'enabled': _enabled(store),
+        'configured': configured(store),
+        'provider': 'volc_seedasr',
+        'can_configure': bool(can_configure),
+    }
 
 
 def save_config(store, data):
@@ -88,8 +94,7 @@ def save_config(store, data):
 
 def _encode(payload, message_type, *, final=False, json_payload=False):
     compressed = gzip.compress(payload, mtime=0)
-    header = bytes([0x11, (message_type << 4) | (2 if final else 0),
-                    (0x10 if json_payload else 0) | 1, 0])
+    header = bytes([0x11, (message_type << 4) | (2 if final else 0), (0x10 if json_payload else 0) | 1, 0])
     return header + struct.pack('>I', len(compressed)) + compressed
 
 
@@ -179,16 +184,23 @@ def _segments(data):
                     if not isinstance(word, dict):
                         raise ValueError
                     word_start, word_end = word.get('start_time'), word.get('end_time')
-                    if (type(word_start) is not int or type(word_end) is not int or
-                            not 0 <= word_start <= word_end <= 20 * 60 * 1000):
+                    if (
+                        type(word_start) is not int
+                        or type(word_end) is not int
+                        or not 0 <= word_start <= word_end <= 20 * 60 * 1000
+                    ):
                         raise ValueError
                 if 'start_time' not in item:
                     start = min(word['start_time'] for word in words)
                 if 'end_time' not in item:
                     end = max(word['end_time'] for word in words)
-            if (not isinstance(text, str) or len(text) > 16_000 or
-                    type(start) is not int or type(end) is not int or
-                    not 0 <= start <= end <= 20 * 60 * 1000):
+            if (
+                not isinstance(text, str)
+                or len(text) > 16_000
+                or type(start) is not int
+                or type(end) is not int
+                or not 0 <= start <= end <= 20 * 60 * 1000
+            ):
                 raise ValueError
             total_chars += len(text)
             if total_chars > MAX_TEXT_CHARS:
@@ -209,8 +221,15 @@ def _segments(data):
                 raise ValueError
             if not text.strip():
                 continue
-            segments.append({'id': f'segment-{len(segments) + 1}', 'speaker_id': speaker,
-                             'text': text, 'start_ms': start, 'end_ms': end})
+            segments.append(
+                {
+                    'id': f'segment-{len(segments) + 1}',
+                    'speaker_id': speaker,
+                    'text': text,
+                    'start_ms': start,
+                    'end_ms': end,
+                }
+            )
         return segments
     except (ValueError, TypeError, UnicodeError, RecursionError):
         raise ASRError('listening_asr_protocol') from None
@@ -229,8 +248,7 @@ class _Upstream:
 
     async def send_audio(self, pcm, final=False):
         """累计客户端小包到200ms；final提交余量，计数包含尚未发出的音频。"""
-        if (not isinstance(pcm, bytes) or len(pcm) % 2 or len(pcm) > MAX_AUDIO_FRAME_BYTES or
-                type(final) is not bool):
+        if not isinstance(pcm, bytes) or len(pcm) % 2 or len(pcm) > MAX_AUDIO_FRAME_BYTES or type(final) is not bool:
             raise ValueError('invalid_listening_audio')
         async with self._sending:
             if self.closed or self.sent_final or self.received_final:
@@ -297,16 +315,21 @@ async def connect_asr(store):
     if not (fields.get('api_key') or (fields.get('app_id') and fields.get('access_token'))):
         raise ASRError('listening_asr_not_configured')
     request_id = str(uuid.uuid4())
-    headers = {'X-Api-Resource-Id': RESOURCE_ID, 'X-Api-Request-Id': request_id,
-               'X-Api-Connect-Id': request_id}
+    headers = {'X-Api-Resource-Id': RESOURCE_ID, 'X-Api-Request-Id': request_id, 'X-Api-Connect-Id': request_id}
     if fields['api_key']:
         headers['X-Api-Key'] = fields['api_key']
     else:
         # SAUC legacy auth differs from realtime dialogue: App-Key is the app ID.
         headers.update({'X-Api-App-Key': fields['app_id'], 'X-Api-Access-Key': fields['access_token']})
     try:
-        options = {'additional_headers': headers, 'max_size': MAX_RESPONSE_BYTES,
-                   'max_queue': 4, 'open_timeout': 15, 'close_timeout': 3, 'compression': None}
+        options = {
+            'additional_headers': headers,
+            'max_size': MAX_RESPONSE_BYTES,
+            'max_queue': 4,
+            'open_timeout': 15,
+            'close_timeout': 3,
+            'compression': None,
+        }
         # websockets 14 connects directly; 15+ defaults to environment proxy discovery.
         if _CONNECT_SUPPORTS_PROXY:
             options['proxy'] = None
@@ -316,12 +339,21 @@ async def connect_asr(store):
         raise ASRError('listening_asr_unavailable') from None
     upstream = _Upstream(socket)
     try:
-        request = {'user': {'uid': request_id},
-                   'audio': {'format': 'pcm', 'codec': 'raw', 'rate': 16000, 'bits': 16, 'channel': 1},
-                   'request': {'model_name': 'bigmodel', 'enable_nonstream': True,
-                               'enable_speaker_info': True, 'show_utterances': True,
-                               'ssd_version': '200', 'result_type': 'full',
-                               'enable_itn': False, 'enable_punc': True, 'enable_ddc': False}}
+        request = {
+            'user': {'uid': request_id},
+            'audio': {'format': 'pcm', 'codec': 'raw', 'rate': 16000, 'bits': 16, 'channel': 1},
+            'request': {
+                'model_name': 'bigmodel',
+                'enable_nonstream': True,
+                'enable_speaker_info': True,
+                'show_utterances': True,
+                'ssd_version': '200',
+                'result_type': 'full',
+                'enable_itn': False,
+                'enable_punc': True,
+                'enable_ddc': False,
+            },
+        }
         try:
             await socket.send(_encode(json.dumps(request).encode(), 1, json_payload=True))
         except Exception:
