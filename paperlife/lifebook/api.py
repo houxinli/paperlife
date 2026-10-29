@@ -45,13 +45,16 @@ class MemberInput(BaseModel):
     role: Literal['editor', 'reader']
 
 
-def build_router(store, current_user, account_active, account_authorized=None, session_cookie='paperlife_session'):
+def build_router(
+    store, current_user, account_active, account_authorized=None, session_cookie='paperlife_session', request_token=None
+):
     """store 由应用创建并共享；account_active(uid) 判断账号存在且启用，lifebook 不直接读账号库。
 
     session_cookie 是宿主登录 Cookie 名；嵌入 paperbridge 等宿主时传入宿主自己的名字。
+    request_token 可复用宿主的令牌解析，确保通话绑定与 HTTP 鉴权使用同一个登录会话。
     """
     router = APIRouter(prefix='/life', tags=['life'], route_class=PrivateRoute)
-    access = Access(store, account_authorized, session_cookie)
+    access = Access(store, account_authorized, session_cookie, request_token)
     # 票据与活跃会话只在本进程内存中，部署必须保持单 worker（见 docs/architecture.md）。
     tickets = {}
     active = set()

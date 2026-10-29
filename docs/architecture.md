@@ -93,7 +93,7 @@ node scripts/sync_shared.mjs --check
 
 网页回补必须同时交付 `web/life/audio.js` 与生成的 `web/life/audio-gate.js`，映射到旧库 `apps/web/public/life/`，不能漏掉新增的 import 目标。其他页面、提示词、偏好等改动应按本轮清单另行回补；小程序生成产物只进入小程序开发包。旧库可以回放对应网页测试，若移植跨端契约测试，还需一起移植契约/测试依赖并适配路径，不能只复制测试入口。
 
-旧库的 `lifebook/api.py` 有宿主适配：`PrivateRoute` 来自 `briefing.api`，会话 cookie 为 `paperbridge_session`；新库使用 `private_route` 和 `paperlife_session`。顶层 `main.py`、账号服务与部署路径也不同，不能整套覆盖，不能把 `/auth/wechat` 在新库存在视为旧站已开通微信认证。
+宿主适配集中在顶层：通过 `build_router(..., account_authorized=..., session_cookie=..., request_token=...)` 传入账号/会话有效性检查、Cookie 名及可选令牌读取函数。`request_token(request)` 必须与宿主 HTTP 鉴权选择同一令牌，尤其是 Bearer 大小写、空白与 Cookie 并存时；返回值仅在生成摘要时使用，不存入票据。独立 Paperlife 默认解析规则保持不变。旧库用同名 `private_route` 包装既有私有响应头处理，避免修改业务副本。顶层 `main.py`、账号服务与部署路径不同，不能整套覆盖，不能把 `/auth/wechat` 在新库存在视为旧站已开通微信认证。
 
 当前重构只通过本地合成测试核对代码与协议。真实微信开发工具、iOS/Android 录放音、供应商方言听感和国内网络仍需要独立验收；代码生成检查不证明这些效果，也不证明旧站已经发布。
 
