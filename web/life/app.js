@@ -27,7 +27,7 @@ const playback=createPlaybackGuard({isRecording:()=>!!call||listening.active,get
 document.addEventListener('play',playback.onPlay,true);
 async function api(path,method='GET',body){
   const response=await fetch(BASE+'/api'+path,{method,credentials:'same-origin',headers:{...(guestMode?{'X-Life-Link':guestToken}:{}),...(token?{Authorization:'Bearer '+token}:{}),...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify(body):undefined});
-  if(!response.ok){const data=await response.json().catch(()=>({}));throw Error(typeof data.detail==='string'?data.detail:`请求失败（${response.status}）`);}
+  if(!response.ok){const data=await response.json().catch(()=>({}));throw Object.assign(Error(typeof data.detail==='string'?data.detail:`请求失败（${response.status}）`),{status:response.status});}
   return response.json();
 }
 const action=fn=>async event=>{event?.preventDefault();try{await fn(event);}catch(e){note(e.message);}};

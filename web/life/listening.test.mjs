@@ -64,3 +64,80 @@ test('ongoing recognition and readers cannot edit identity even when detail offe
   const d=detail();d.session.status='active';d.recognition_status='partial';const h=setup(async()=>d);await h.ui.openSession('fiction-s');assert.equal(h.get('listening-save'),undefined);
   const r=setup(baseApi);r.setProfile({id:'fiction-a',role:'reader'});await r.ui.openSession('fiction-s');assert.equal(r.get('listening-save'),undefined);
 });
+async function withRecorder(responses,run,{wakeLock}={}){
+  const original={prepare:ListeningCall.prototype.prepare,connect:ListeningCall.prototype.connect,stop:ListeningCall.prototype.stop,setTimeout:globalThis.setTimeout,clearTimeout:globalThis.clearTimeout,navigator:Object.getOwnPropertyDescriptor(globalThis,'navigator')};
+  const timers=new Map();let timerId=0,call,prepares=0,stops=0;const tickets=[],posts=[];
+  globalThis.setTimeout=(fn,ms)=>{timers.set(++timerId,{fn,ms});return timerId;};globalThis.clearTimeout=id=>timers.delete(id);
+  const flush=async()=>{for(const [id,{fn}] of [...timers]){timers.delete(id);await fn();}};
+  Object.defineProperty(globalThis,'navigator',{value:wakeLock?{wakeLock}:{},configurable:true});
+  ListeningCall.prototype.prepare=async function(){prepares++;call=this;};
+  ListeningCall.prototype.connect=function(ticket){tickets.push(ticket);this.ready=false;};
+  ListeningCall.prototype.stop=function(){stops++;this.stopping=true;};
+  try{
+    const h=setup(async(path,method,body)=>{
+      if(method!=='POST')return provider;posts.push(body);const next=responses.shift();
+      if(next instanceof Error)throw next;return next||{id:`fiction-s${posts.length}`,ticket:`fiction-t${posts.length}`};
+    });
+    await h.ui.load();h.get('listening-title').value='虚构标题';h.get('listening-consent').checked=true;
+    await h.get('listening-record-form').onsubmit({preventDefault(){}});
+    await run({h,flush,timers,posts,tickets,call:()=>call,counts:()=>({prepares,stops})});
+  }finally{
+    Object.assign(ListeningCall.prototype,{prepare:original.prepare,connect:original.connect,stop:original.stop});
+    globalThis.setTimeout=original.setTimeout;globalThis.clearTimeout=original.clearTimeout;
+    if(original.navigator)Object.defineProperty(globalThis,'navigator',original.navigator);
+  }
+}
+const httpError=(status,message='虚构错误')=>Object.assign(Error(message),{status});
+test('limit and dropped connections continue as numbered parts on the same microphone',async()=>{
+  await withRecorder([],async({h,flush,posts,tickets,call,counts})=>{
+    assert.deepEqual(tickets,['fiction-t1']);assert.equal(posts[0].title,'虚构标题');
+    call().onEvent({type:'ready'});assert.match(h.get('listening-state').textContent,/正在静默旁听/);
+    call().onEvent({type:'saved',seconds:7200});call().onEvent({type:'ending',reason:'limit'});assert.match(h.get('listening-state').textContent,/第1段已到时长上限/);
+    call().onEvent({type:'saved',session:'fiction-s1',recognition_status:'complete'});call().onEvent({type:'ended',status:'ended',recognition_status:'complete'});
+    assert.equal(h.ui.active,true);await flush();
+    assert.deepEqual(tickets,['fiction-t1','fiction-t2']);assert.equal(posts[1].title,'虚构标题（第2段）');assert.deepEqual(posts[1].participants,posts[0].participants);
+    call().onEvent({type:'ready'});call().onEvent({type:'saved',seconds:5});assert.match(h.get('listening-state').textContent,/2 小时 0 分.*第2段/);
+    call().onEvent({type:'disconnected'});assert.match(h.get('listening-state').textContent,/正在重新连接/);await flush();
+    assert.equal(tickets.at(-1),'fiction-t3');assert.equal(posts[2].title,'虚构标题（第3段）');assert.equal(counts().prepares,1);assert.deepEqual(h.saved,['fiction-s1']);
+  });
+});
+test('a part that is still finishing (409) is retried; fatal errors and repeated failures stop recording',async()=>{
+  await withRecorder([undefined,httpError(409,'已有聊天正在连接或进行中'),undefined],async({h,flush,tickets,call})=>{
+    call().onEvent({type:'ready'});call().onEvent({type:'disconnected'});await flush();assert.equal(tickets.length,1);
+    assert.match(h.get('listening-state').textContent,/正在重新连接/);await flush();assert.deepEqual(tickets,['fiction-t1','fiction-t3']);
+    for(let i=0;i<3;i++){call().onEvent({type:'error',message:'虚构识别失败'});call().onEvent({type:'ended',status:'interrupted'});await flush();}
+    assert.equal(h.ui.active,false);assert.match(h.get('listening-state').textContent,/多次尝试都没能接上/);
+  });
+  await withRecorder([undefined,httpError(403,'无权限')],async({h,flush,posts,call})=>{
+    call().onEvent({type:'ready'});call().onEvent({type:'disconnected'});await flush();
+    assert.equal(posts.length,2);assert.equal(h.ui.active,false);assert.match(h.get('listening-state').textContent,/无权限/);await flush();assert.equal(posts.length,2);
+  });
+});
+test('first part failure reports instead of retrying; user stop and hidden page never continue',async()=>{
+  await withRecorder([],async({h,flush,posts,call})=>{
+    call().onEvent({type:'error',message:'虚构配置错误'});call().onEvent({type:'ended',status:'interrupted'});await flush();
+    assert.equal(posts.length,1);assert.equal(h.ui.active,false);assert.match(h.get('listening-state').textContent,/未能开始/);
+  });
+  await withRecorder([],async({h,flush,posts,call,counts})=>{
+    call().onEvent({type:'ready'});h.listeners.visibilitychange();assert.equal(counts().stops,0);
+    document.hidden=true;h.listeners.visibilitychange();assert.equal(counts().stops,1);
+    call().onEvent({type:'saved',session:'fiction-s1',recognition_status:'complete'});call().onEvent({type:'ended',status:'ended',recognition_status:'complete'});await flush();
+    assert.equal(posts.length,1);assert.equal(h.ui.active,false);assert.match(h.get('listening-state').textContent,/旁听已保存/);
+  });
+});
+test('screen stays awake while recording, is released afterwards, and unsupported devices get a hint',async()=>{
+  const requests=[];let released=0;
+  const wakeLock={request:async kind=>{requests.push(kind);return {addEventListener(){},release:async()=>{released++;}};}};
+  await withRecorder([],async({h,call})=>{
+    await Promise.resolve();assert.deepEqual(requests,['screen']);assert.equal(h.get('listening-hint').textContent,'');
+    call().onEvent({type:'ready'});h.get('listening-stop').onclick();call().onEvent({type:'ended',status:'ended',recognition_status:'complete'});
+    assert.equal(released,1);
+  },{wakeLock});
+  await withRecorder([],async({h})=>{assert.match(h.get('listening-hint').textContent,/自动锁屏/);});
+});
+test('capture stopped by the system between parts finishes instead of reconnecting',async()=>{
+  await withRecorder([],async({h,flush,posts,call})=>{
+    call().onEvent({type:'ready'});call().onEvent({type:'disconnected'});call().stopping=true;await flush();
+    assert.equal(posts.length,1);assert.equal(h.ui.active,false);assert.match(h.get('listening-state').textContent,/录音已停止/);
+  });
+});

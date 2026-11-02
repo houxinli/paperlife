@@ -444,7 +444,7 @@ class ListeningASRTests(unittest.TestCase):
             {'text': '无时间', 'words': [{'start_time': True, 'end_time': 100}]},
             {'text': '无时间', 'words': [{'start_time': 100, 'end_time': 50}]},
             {'text': '无时间', 'words': [{'start_time': -1, 'end_time': 100}]},
-            {'text': '无时间', 'words': [{'start_time': 0, 'end_time': 1200001}]},
+            {'text': '无时间', 'words': [{'start_time': 0, 'end_time': self.asr.MAX_DURATION_MS + 1}]},
             {'text': '无时间', 'words': [{'end_time': 100}]},
             {'text': '无时间', 'words': 'invalid'},
             {'text': '无时间', 'start_time': True, 'words': [{'start_time': 0, 'end_time': 100}]},
@@ -455,6 +455,17 @@ class ListeningASRTests(unittest.TestCase):
                 self.run_connection(
                     [response({'audio_info': {'duration': 1000}, 'result': {'utterances': [item]}}, flags=2)]
                 )
+
+    def test_two_hour_call_bounds(self):
+        # 视频通话旁听可能远超20分钟；两小时内的时间戳与音频量都应被接受。
+        self.assertEqual(self.asr.MAX_DURATION_MS, 2 * 60 * 60 * 1000)
+        self.assertEqual(self.asr.MAX_AUDIO_BYTES, 16_000 * 2 * 2 * 60 * 60)
+        late = self.asr.MAX_DURATION_MS - 2000
+        item = {'text': '虚构的最后一句', 'words': [{'start_time': late, 'end_time': self.asr.MAX_DURATION_MS}]}
+        events, _, _ = self.run_connection([response({'result': {'utterances': [item]}}, flags=2)])
+        self.assertEqual(
+            [(s['start_ms'], s['end_ms']) for s in events[0]['segments']], [(late, self.asr.MAX_DURATION_MS)]
+        )
 
     def test_audio_bounds_alignment_and_session_duration(self):
         self.asr.save_config(self.store, {'enabled': True})

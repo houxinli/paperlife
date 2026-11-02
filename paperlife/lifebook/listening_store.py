@@ -3,6 +3,7 @@
 import json
 import re
 from contextlib import nullcontext
+from .listening_asr import MAX_DURATION_MS
 from .materials import MaterialError, ConflictError
 
 IDENT = re.compile(r'^[A-Za-z0-9_-]{1,80}$')
@@ -82,7 +83,7 @@ def normalized_segments(segments):
             or isinstance(end, bool)
             or not isinstance(start, (int, float))
             or not isinstance(end, (int, float))
-            or not 0 <= start <= end <= 1205000
+            or not 0 <= start <= end <= MAX_DURATION_MS + 5000
         ):
             raise MaterialError('识别时间无效')
         seen.add(ident)
