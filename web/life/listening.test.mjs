@@ -105,7 +105,8 @@ test('a part that is still finishing (409) is retried; fatal errors and repeated
   await withRecorder([undefined,httpError(409,'已有聊天正在连接或进行中'),undefined],async({h,flush,tickets,call})=>{
     call().onEvent({type:'ready'});call().onEvent({type:'disconnected'});await flush();assert.equal(tickets.length,1);
     assert.match(h.get('listening-state').textContent,/正在重新连接/);await flush();assert.deepEqual(tickets,['fiction-t1','fiction-t3']);
-    for(let i=0;i<3;i++){call().onEvent({type:'error',message:'虚构识别失败'});call().onEvent({type:'ended',status:'interrupted'});await flush();}
+    // 第一段只撑了一瞬间就断开（记 1 次），之后再有两段没开始识别就停止。
+    for(let i=0;i<2;i++){assert.equal(h.ui.active,true);call().onEvent({type:'error',message:'虚构识别失败'});call().onEvent({type:'ended',status:'interrupted'});await flush();}
     assert.equal(h.ui.active,false);assert.match(h.get('listening-state').textContent,/多次尝试都没能接上/);
   });
   await withRecorder([undefined,httpError(403,'无权限')],async({h,flush,posts,call})=>{
@@ -140,4 +141,16 @@ test('capture stopped by the system between parts finishes instead of reconnecti
     call().onEvent({type:'ready'});call().onEvent({type:'disconnected'});call().stopping=true;await flush();
     assert.equal(posts.length,1);assert.equal(h.ui.active,false);assert.match(h.get('listening-state').textContent,/录音已停止/);
   });
+});
+test('a flaky network that keeps dropping short parts stops instead of producing endless fragments',async()=>{
+  const realNow=Date.now;let now=1000000;Date.now=()=>now;
+  try{
+    await withRecorder([],async({h,flush,posts,call})=>{
+      call().onEvent({type:'ready'});now+=2*3600*1000;call().onEvent({type:'disconnected'});await flush();
+      for(let i=0;i<2;i++){call().onEvent({type:'ready'});now+=60000;call().onEvent({type:'disconnected'});await flush();}
+      assert.equal(h.ui.active,true);assert.equal(posts.length,4);
+      for(let i=0;i<3;i++){call().onEvent({type:'ready'});now+=5000;call().onEvent({type:'disconnected'});await flush();}
+      assert.equal(h.ui.active,false);assert.equal(posts.length,6);assert.match(h.get('listening-state').textContent,/多次尝试都没能接上/);
+    });
+  }finally{Date.now=realNow;}
 });

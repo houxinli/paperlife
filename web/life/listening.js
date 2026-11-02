@@ -1,7 +1,7 @@
 import {ListeningCall} from './listening-audio.js';
 
-// 续录：连续几段都没连上，或断开超过时限仍接不上，就停止录音，避免无限重试。
-const MAX_FAILED_PARTS=3,RECONNECT_MS=180000;
+// 续录：连续几段都没连上或撑不到一分钟（网络太差会不停切出很短的段），或断开超过时限仍接不上，就停止录音。
+const MAX_FAILED_PARTS=3,HEALTHY_PART_MS=60000,RECONNECT_MS=180000;
 // 这些错误重试也不会好（未登录、无权限、档案不存在、请求无效、当日次数用完）。
 const FATAL_STATUS=new Set([401,403,404,422,429]);
 
@@ -89,7 +89,7 @@ export function createListening({api,profile,isGuest=()=>false,note=()=>{},fetch
   async function record(c,ui,baseTitle,people){
     const {state,hint,start,end,live}=ui;
     const current=new ListeningCall(onEvent);call=current;
-    let part=0,sid=null,saved=false,ready=false,everReady=false,failedParts=0,lostAt=0,retry=null,finished=false,seconds=0,partSeconds=0;
+    let part=0,sid=null,saved=false,ready=false,readyAt=0,limited=false,everReady=false,failedParts=0,lostAt=0,retry=null,finished=false,seconds=0,partSeconds=0;
     const owned=()=>!finished&&valid(c)&&call===current;
     const awake=keepScreenOn(()=>{if(owned())hint.textContent='这台设备不能由网页保持亮屏。请在系统设置里暂时关闭自动锁屏，录完再改回来；锁屏会结束录音。';});
     controller={stop:userStop,abandon};
@@ -111,13 +111,13 @@ export function createListening({api,profile,isGuest=()=>false,note=()=>{},fetch
     function total(){const s=Math.floor(seconds+partSeconds);return s<60?`${s} 秒`:s<3600?`${Math.floor(s/60)} 分 ${s%60} 秒`:`${Math.floor(s/3600)} 小时 ${Math.floor(s/60)%60} 分`;}
     function onEvent(event){
       if(!owned())return;
-      if(event.type==='ready'){ready=everReady=true;failedParts=0;lostAt=0;status(state,`正在静默旁听${part>1?` · 第${part}段`:''} · AI 不会出声。`);}
+      if(event.type==='ready'){ready=everReady=true;readyAt=Date.now();lostAt=0;status(state,`正在静默旁听${part>1?` · 第${part}段`:''} · AI 不会出声。`);}
       if(event.type==='listening_transcript'){
         live.replaceChildren();const segments=event.segments||[];
         if(event.total>segments.length)live.append(el('p',`共 ${event.total} 句，这里只显示最近 ${segments.length} 句。`));
         for(const segment of segments){const bubble=el('p');bubble.className='listening-bubble';bubble.append(el('strong',`${segment.speaker_id==='unknown'?'未知声音':`声音组 ${segment.speaker_id}`} · 暂定`),el('span',segment.text));live.append(bubble);}
       }
-      if(event.type==='ending'){if(current.stopping){end.disabled=true;status(state,'录音已停止，正在等待最终识别并保存…');}else status(state,`第${part}段已到时长上限，正在保存并接着录下一段…`);}
+      if(event.type==='ending'){if(current.stopping){end.disabled=true;status(state,'录音已停止，正在等待最终识别并保存…');}else{limited=true;status(state,`第${part}段已到时长上限，正在保存并接着录下一段…`);}}
       if(event.type==='saved'){
         if(event.recognition_status){saved=true;if(current.stopping)status(state,'服务器已保留录音与识别结果。正在结束连接…');Promise.resolve(onSaved(sid)).catch(()=>{});}
         else{partSeconds=event.seconds||0;status(state,`已收到 ${total()} 录音${part>1?` · 第${part}段`:''} · ${current.stopping?'正在等待最终识别并保存':'静默旁听中'}`);}
@@ -132,7 +132,7 @@ export function createListening({api,profile,isGuest=()=>false,note=()=>{},fetch
     function partLost(closedByServer){
       const wasReady=ready;ready=false;
       if(!everReady){finish('旁听未能开始：连接没有建立。请检查服务配置后重试。');return;}
-      if(!wasReady)failedParts++;
+      if(wasReady&&(limited||Date.now()-readyAt>=HEALTHY_PART_MS))failedParts=0;else failedParts++;
       if(!lostAt)lostAt=Date.now();
       if(failedParts>=MAX_FAILED_PARTS||Date.now()-lostAt>RECONNECT_MS){finish(`多次尝试都没能接上，已停止录音。已收到的 ${total()} 录音都已保存，请稍后再开始。`);return;}
       status(state,closedByServer&&wasReady?`第${part}段已保存，正在接着录下一段…（已录 ${total()}）`:`连接中断，正在重新连接…（已录 ${total()}）`);
@@ -150,7 +150,7 @@ export function createListening({api,profile,isGuest=()=>false,note=()=>{},fetch
       try{
         const result=await api(c.guest?'/life/guest/listening':`/life/profiles/${enc(c.id)}/listening`,'POST',{title:number>1?`${baseTitle}（第${number}段）`:baseTitle,participants:people,consent:true});
         if(!owned()||stopped())return;
-        part=number;sid=result.id||result.session?.id;saved=false;ready=false;
+        part=number;sid=result.id||result.session?.id;saved=false;ready=false;limited=false;
         current.connect(result.ticket||result.session?.ticket);
       }catch(error){
         if(!owned()||stopped())return;
