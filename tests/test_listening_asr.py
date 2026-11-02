@@ -456,6 +456,48 @@ class ListeningASRTests(unittest.TestCase):
                     [response({'audio_info': {'duration': 1000}, 'result': {'utterances': [item]}}, flags=2)]
                 )
 
+    def test_empty_second_pass_sentence_keeps_first_pass_text(self):
+        # 真实探针：二遍识别把两句清楚的话定稿成空文字，第一遍明明听到了。
+        first = {
+            'result': {
+                'utterances': [
+                    utterance('虚构：那年住在河边。', '1', 0, 1000),
+                    {'text': '虚构：河边好玩吗', 'start_time': 1200, 'end_time': 2400, 'definite': False},
+                ]
+            }
+        }
+        shifted = {
+            'result': {
+                'utterances': [
+                    utterance('虚构：那年住在河边。', '1', 0, 1000),
+                    {'text': '', 'start_time': 1200, 'end_time': 2600, 'definite': True},
+                    {'text': '虚构：记得有两个哥哥', 'start_time': 3100, 'end_time': 4200, 'definite': False},
+                ]
+            }
+        }
+        final = {
+            'result': {
+                'utterances': [
+                    utterance('虚构：那年住在河边。', '1', 0, 1000),
+                    {'text': '', 'start_time': 1200, 'end_time': 2600, 'definite': True},
+                    {'text': '', 'start_time': 2900, 'end_time': 4400, 'definite': True},
+                    {'text': '', 'start_time': 4600, 'end_time': 5000, 'definite': True},
+                ]
+            }
+        }
+        events, _, _ = self.run_connection([response(first), response(shifted), response(final, flags=2)])
+        self.assertEqual(
+            [(s['speaker_id'], s['text'], s['start_ms'], s['end_ms']) for s in events[-1]['segments']],
+            [
+                ('1', '虚构：那年住在河边。', 0, 1000),
+                ('unknown', '虚构：河边好玩吗', 1200, 2600),
+                # 二遍的起点和第一遍有偏移，按时间重叠找回。
+                ('unknown', '虚构：记得有两个哥哥', 2900, 4400),
+                # 从没听到文字的空句仍然丢弃。
+            ],
+        )
+        self.assertEqual([s['id'] for s in events[-1]['segments']], ['segment-1', 'segment-2', 'segment-3'])
+
     def test_two_hour_call_bounds(self):
         # 视频通话旁听可能远超20分钟；两小时内的时间戳与音频量都应被接受。
         self.assertEqual(self.asr.MAX_DURATION_MS, 2 * 60 * 60 * 1000)

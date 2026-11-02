@@ -28,6 +28,8 @@ MAX_DECOMPRESSED_BYTES = 16_000_000
 MAX_SEGMENTS = 10_000
 MAX_TEXT_CHARS = 300_000
 AUDIO_CHUNK_BYTES = 6400  # 200ms, 16kHz / mono / signed 16-bit little-endian.
+# 记住最近这么多句第一遍（流式）文字，供二遍返回空文字时找回。
+MAX_HEARD = 500
 
 
 class ASRError(RuntimeError):
@@ -148,8 +150,23 @@ def _decode(frame):
         raise ASRError('listening_asr_protocol') from None
 
 
-def _segments(data):
-    """result_type=full：存在 utterances 时替换全部快照；缺省字段是 ACK。"""
+def _recall(heard, start, end):
+    """同一时段第一遍听到的文字；按时间重叠最多的那句（二遍的起点可能和第一遍略有偏移）。"""
+    best, overlap = None, 0
+    for first_start, first_end, text in heard.values():
+        shared = min(end, first_end) - max(start, first_start)
+        if shared > overlap:
+            best, overlap = text, shared
+    return best
+
+
+def _segments(data, heard=None):
+    """result_type=full：存在 utterances 时替换全部快照；缺省字段是 ACK。
+
+    heard 记住第一遍的文字。二遍识别偶尔把一整句定稿为空文字：真实供应商探针里，
+    清楚的合成语音有 2/8 句如此，都发生在没分出说话人的句子上。这时沿用同一时段第一遍的文字，
+    说话人记为 unknown，留给人工核对；从未听到文字的空句仍然丢弃。
+    """
     try:
         result = data.get('result')
         if result is None:
@@ -222,6 +239,13 @@ def _segments(data):
                 speaker = str(speaker)
             if not isinstance(speaker, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', speaker):
                 raise ValueError
+            definite = item.get('definite') is True
+            if heard is not None and text.strip() and not definite:
+                heard[start] = (start, end, text)
+                if len(heard) > MAX_HEARD:
+                    del heard[min(heard)]
+            if heard is not None and not text.strip() and definite:
+                text = _recall(heard, start, end) or ''
             if not text.strip():
                 continue
             segments.append(
@@ -248,6 +272,7 @@ class _Upstream:
         self._audio_buffer = bytearray()
         self._sending = asyncio.Lock()
         self._reading = False
+        self._heard = {}
 
     async def send_audio(self, pcm, final=False):
         """累计客户端小包到200ms；final提交余量，计数包含尚未发出的音频。"""
@@ -291,7 +316,7 @@ class _Upstream:
                 raise ASRError('listening_asr_incomplete') from None
             data, final = _decode(frame)
             self.received_final = final
-            snapshot = _segments(data)
+            snapshot = _segments(data, self._heard)
             if snapshot is not None:
                 segments = snapshot
             if snapshot is not None or final:
