@@ -71,25 +71,34 @@ export function createListening({api,profile,isGuest=()=>false,note=()=>{},fetch
     const form=el('form','','listening-record-form'),title=field(form,'记录标题（可选）','input','listening-title');title.maxLength=180;
     const roster=el('details');roster.append(el('summary','参与者称呼（可选）'),el('p','名单只是整理线索，不会自动识别或绑定声音身份。'));form.append(roster);
     const participants=participantEditor(roster,[],true,'listening-roster');
+    // 专属链接是长辈自己录，笔记是给提问的家人看的，不提供。
+    const notesToggle=c.guest?null:field(form,'AI 实时笔记：边听边整理要点和可以追问的问题（调用文本模型，只给你看，不进档案）','input','listening-notes-enabled','','checkbox');if(notesToggle)notesToggle.checked=true;
     const consent=field(form,'在场及通话双方都已知情并同意录音和识别','input','listening-consent','','checkbox');
     const start=el('button','开始静默旁听','listening-start');start.type='submit';start.disabled=!enabled||(!c.guest&&!editable());
     const end=button('结束旁听并保存',stop,'listening-stop');end.hidden=true;const live=el('div','','listening-live');live.className='listening-live';live.setAttribute('role','log');live.setAttribute('aria-live','polite');
-    form.append(start,end);d.append(form,live);root.append(d);
+    const notesBox=el('section','','listening-notes');notesBox.className='listening-notes';notesBox.hidden=true;
+    const voices=el('div','','listening-voices');voices.className='listening-voices';voices.hidden=true;
+    form.append(start,end);d.append(form,notesBox,voices,live);root.append(d);
     form.onsubmit=async e=>{
       e.preventDefault();if(!valid(c)||recording||start.disabled)return;
       if(!consent.checked){status(state,'请先确认在场及通话双方已知情并同意。');return;}
       if(!canStart()){status(state,'请先结束正在进行的语音聊天或回听，再开始旁听。');return;}
       const people=participants.values();if(people.some(p=>!p.name)){status(state,'请填写参与者称呼，或刷新后不填名单直接开始。');return;}
       releaseAudio();setBusy(true);start.disabled=true;end.hidden=false;end.disabled=false;d.open=true;hint.textContent='';status(state,'正在申请麦克风并连接旁听服务…');
-      await record(c,{state,hint,start,end,live,enabled},title.value.trim()||'旁听通话',people);
+      await record(c,{state,hint,start,end,live,voices,notesBox,enabled,notes:!!notesToggle?.checked},title.value.trim()||'旁听通话',people);
     };
   }
   // 一次旁听由一段或多段录音组成：某段到时长上限、断网、服务重启或识别中断时，麦克风不停，
   // 换新票据接着录下一段（各段是独立的录音档案）。用户点结束、页面切后台、无权限或长时间接不上时才真正结束。
-  async function record(c,ui,baseTitle,people){
-    const {state,hint,start,end,live}=ui;
+  async function record(c,ui,baseTitle,roster){
+    const {state,hint,start,end,live,voices,notesBox}=ui;
     const current=new ListeningCall(onEvent);call=current;
-    let part=0,sid=null,saved=false,ready=false,readyAt=0,limited=false,everReady=false,failedParts=0,lostAt=0,retry=null,finished=false,seconds=0,partSeconds=0,livePart=null;
+    let part=0,sid=null,saved=false,ready=false,readyAt=0,limited=false,everReady=false,failedParts=0,lostAt=0,retry=null,finished=false,seconds=0,partSeconds=0,livePart=null,labeledParts=0;
+    // 录音中给声音起名用的名单：没有档案主体就补上档案本人；名单为空时再补“我”。
+    const people=roster.map(p=>({...p}));
+    if(!people.some(p=>p.is_subject))people.unshift({id:'subject',name:(profile()?.name||'档案主体').slice(0,80),relationship:'',is_subject:true});
+    if(!roster.length)people.push({id:'me',name:'我',relationship:'',is_subject:false});
+    let partLabels={};const voiceRows=new Map();
     const owned=()=>!finished&&valid(c)&&call===current;
     const awake=keepScreenOn(()=>{if(owned())hint.textContent='这台设备不能由网页保持亮屏。请在系统设置里暂时关闭自动锁屏，录完再改回来；锁屏会结束录音。';});
     controller={stop:userStop,abandon};
@@ -114,6 +123,47 @@ export function createListening({api,profile,isGuest=()=>false,note=()=>{},fetch
       const box=el('section'),header=part>1?el('p',`第${part}段 · 声音组重新编号`):null;box.className='listening-live-part';
       if(header){header.className='muted';box.append(header);}
       livePart={box,header,bubbles:[]};live.append(box);
+      // 每段的声音组重新编号，起名也按段重新来。
+      partLabels={};voiceRows.clear();voices.hidden=c.guest;if(c.guest)return;
+      const tip=el('p','认出是谁就选一下，字幕会显示名字；这一段结束后自动保存为声音归属，之后在录音档案里还能改。');tip.className='muted';voices.replaceChildren(tip);
+    }
+    function nameFor(speaker){
+      const person=people.find(p=>p.id===partLabels[speaker]);
+      return person?person.name:speaker==='unknown'?'未知声音':`声音组 ${speaker}`;
+    }
+    function relabel(){for(const bubble of livePart?.bubbles||[])bubble.who.textContent=nameFor(bubble.speaker);}
+    function sendLabels(){current.sendControl({type:'labels',participants:people,labels:partLabels});}
+    function fillOptions(select){
+      const value=select.value;select.replaceChildren();
+      for(const [id,text] of [['','还没认出来'],...people.map(p=>[p.id,p.is_subject?`${p.name}（档案主体）`:p.name]),['__new','其他人…']]){const option=el('option',text);option.value=id;select.append(option);}
+      select.value=value;
+    }
+    function addVoice(speaker){
+      const row=el('div');row.className='listening-voice';const label=el('label',`声音组 ${speaker} 是`),select=el('select','',`listening-voice-${voiceRows.size}`);label.append(select);row.append(label);
+      const name=el('input','',`listening-voice-name-${voiceRows.size}`);name.maxLength=80;name.placeholder='称呼';name.hidden=true;
+      const add=button('添加',()=>{
+        const value=name.value.trim();if(!value||people.length>=30)return;
+        let id=`person-${++participantCounter}`;while(people.some(p=>p.id===id))id=`person-${++participantCounter}`;
+        people.push({id,name:value,relationship:'',is_subject:false});for(const other of voiceRows.values())fillOptions(other);
+        select.value=id;name.value='';name.hidden=add.hidden=true;partLabels[speaker]=id;relabel();sendLabels();
+      });add.hidden=true;row.append(name,add);
+      fillOptions(select);select.onchange=()=>{
+        if(select.value==='__new'){name.hidden=add.hidden=false;select.value=partLabels[speaker]||'';return;}
+        name.hidden=add.hidden=true;partLabels[speaker]=select.value||null;relabel();sendLabels();
+      };
+      voiceRows.set(speaker,select);voices.append(row);
+    }
+    function showNotes(event){
+      if(!ui.notes)return;
+      notesBox.hidden=false;
+      if(!notesBox.points){
+        const title=el('p','AI 笔记 · 仅供参考，不进档案');title.className='muted';
+        notesBox.points=el('ul');notesBox.questions=el('ul');notesBox.error=el('p');notesBox.error.className='muted';
+        notesBox.replaceChildren(title,el('h4','要点'),notesBox.points,el('h4','可以追问'),notesBox.questions,notesBox.error);
+      }
+      notesBox.error.textContent=event.error||'';
+      for(const point of event.points||[])notesBox.points.append(el('li',point.speaker?`${point.speaker}：${point.text}`:point.text));
+      if(Array.isArray(event.questions)&&event.questions.length)notesBox.questions.replaceChildren(...event.questions.map(q=>{const item=el('li',q.text);if(q.why){const why=el('small',`（${q.why}）`);item.append(why);}return item;}));
     }
     function showTranscript(event){
       if(!livePart)beginLivePart();
@@ -123,7 +173,8 @@ export function createListening({api,profile,isGuest=()=>false,note=()=>{},fetch
       segments.forEach((segment,offset)=>{
         let bubble=bubbles[from+offset];
         if(!bubble){const node=el('p'),who=el('strong'),text=el('span');node.className='listening-bubble';node.append(who,text);bubble={node,who,text};bubbles.push(bubble);livePart.box.append(node);}
-        bubble.who.textContent=segment.speaker_id==='unknown'?'未知声音':`声音组 ${segment.speaker_id}`;bubble.text.textContent=segment.text;
+        bubble.speaker=segment.speaker_id;bubble.who.textContent=nameFor(segment.speaker_id);bubble.text.textContent=segment.text;
+        if(!c.guest&&segment.speaker_id!=='unknown'&&!voiceRows.has(segment.speaker_id))addVoice(segment.speaker_id);
       });
       if(bubbles.length>total){bubbles.length=total;livePart.box.replaceChildren(...(livePart.header?[livePart.header]:[]),...bubbles.map(b=>b.node));}
       if(stick)live.scrollTop=live.scrollHeight;
@@ -131,17 +182,18 @@ export function createListening({api,profile,isGuest=()=>false,note=()=>{},fetch
     function total(){const s=Math.floor(seconds+partSeconds);return s<60?`${s} 秒`:s<3600?`${Math.floor(s/60)} 分 ${s%60} 秒`:`${Math.floor(s/3600)} 小时 ${Math.floor(s/60)%60} 分`;}
     function onEvent(event){
       if(!owned())return;
-      if(event.type==='ready'){ready=everReady=true;readyAt=Date.now();lostAt=0;beginLivePart();status(state,`正在静默旁听${part>1?` · 第${part}段`:''} · AI 不会出声。`);}
+      if(event.type==='ready'){ready=everReady=true;readyAt=Date.now();lostAt=0;beginLivePart();if(ui.notes)current.sendControl({type:'notes',enabled:true});status(state,`正在静默旁听${part>1?` · 第${part}段`:''} · AI 不会出声。`);}
       if(event.type==='listening_transcript')showTranscript(event);
+      if(event.type==='listening_notes')showNotes(event);
       if(event.type==='ending'){if(current.stopping){end.disabled=true;status(state,'录音已停止，正在等待最终识别并保存…');}else{limited=true;status(state,`第${part}段已到时长上限，正在保存并接着录下一段…`);}}
       if(event.type==='saved'){
-        if(event.recognition_status){saved=true;if(current.stopping)status(state,'服务器已保留录音与识别结果。正在结束连接…');Promise.resolve(onSaved(sid)).catch(()=>{});}
+        if(event.recognition_status){saved=true;if(event.labels_saved)labeledParts++;if(current.stopping)status(state,'服务器已保留录音与识别结果。正在结束连接…');Promise.resolve(onSaved(sid)).catch(()=>{});}
         else{partSeconds=event.seconds||0;status(state,`已收到 ${total()} 录音${part>1?` · 第${part}段`:''} · ${current.stopping?'正在等待最终识别并保存':'静默旁听中'}`);}
       }
       if(event.type==='notice'||event.type==='error')status(state,event.message);
       if(event.type==='ended'||event.type==='disconnected'){
         seconds+=partSeconds;partSeconds=0;
-        if(current.stopping||current.closed){finish(event.type==='ended'&&saved&&event.recognition_status==='complete'?'旁听已保存。可到录音档案核实声音分组和文字。':'旁听连接已结束，最终识别可能不完整。请刷新录音档案检查已保留内容。');return;}
+        if(current.stopping||current.closed){finish((event.type==='ended'&&saved&&event.recognition_status==='complete'?'旁听已保存。可到录音档案核实声音分组和文字。':'旁听连接已结束，最终识别可能不完整。请刷新录音档案检查已保留内容。')+(labeledParts?`已有 ${labeledParts} 段按你的命名保存了声音归属。`:''));return;}
         partLost(event.type==='ended');
       }
     }
@@ -164,7 +216,8 @@ export function createListening({api,profile,isGuest=()=>false,note=()=>{},fetch
       if(!owned()||stopped())return;
       const number=part+1;
       try{
-        const result=await api(c.guest?'/life/guest/listening':`/life/profiles/${enc(c.id)}/listening`,'POST',{title:number>1?`${baseTitle}（第${number}段）`:baseTitle,participants:people,consent:true});
+        // 专属链接的长辈不能修改身份，只带开始时填的名单；家人带上补全后的名单，档案里核实时可直接选。
+        const result=await api(c.guest?'/life/guest/listening':`/life/profiles/${enc(c.id)}/listening`,'POST',{title:number>1?`${baseTitle}（第${number}段）`:baseTitle,participants:c.guest?roster:people,consent:true});
         if(!owned()||stopped())return;
         part=number;sid=result.id||result.session?.id;saved=false;ready=false;limited=false;
         current.connect(result.ticket||result.session?.ticket);
@@ -177,6 +230,9 @@ export function createListening({api,profile,isGuest=()=>false,note=()=>{},fetch
       }
     }
     const note=el('p','实时文字是边听边识别的暂定结果，后面的话会让前面几句继续修正；结束后以录音档案为准。');note.className='muted';live.replaceChildren(note);
+    notesBox.points=null;notesBox.replaceChildren();notesBox.hidden=!ui.notes;
+    if(ui.notes){const waiting=el('p','AI 笔记：录到一些内容后，大约每分钟更新一次。');waiting.className='muted';notesBox.append(waiting);}
+    voices.replaceChildren();voices.hidden=true;
     try{
       await current.prepare();
       if(!owned()||current.stopping){finish('旁听已取消。');return;}
