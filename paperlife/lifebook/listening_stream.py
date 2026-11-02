@@ -12,8 +12,6 @@ MAX_SECONDS = MAX_DURATION_MS // 1000
 FINAL_TIMEOUT = 8
 # 识别结果是累计快照，长录音时整份落库代价随时长增长；按间隔保存，结束时总会保存最终结果。
 SNAPSHOT_SECONDS = 5
-# 实时字幕只下发最近的分句；完整识别结束后从档案读取。
-LIVE_SEGMENTS = 30
 # 上游短暂变慢时缓冲约 30 秒网页音频（每包 20ms），超过才中断。
 QUEUE_PACKETS = 1500
 
@@ -31,6 +29,7 @@ async def listen(client, store, session, profile, authorize=None):
     status = 'interrupted'
     queue = asyncio.Queue(maxsize=QUEUE_PACKETS)
     snapshot_at = started
+    shown = []
     checked_at = None
     permitted = False
 
@@ -111,7 +110,7 @@ async def listen(client, store, session, profile, authorize=None):
                             queue.task_done()
 
                 async def receive_provider():
-                    nonlocal latest, terminal, snapshot_at
+                    nonlocal latest, terminal, snapshot_at, shown
                     async for event in upstream.events():
                         if not allowed():
                             raise ValueError('Access revoked')
@@ -120,14 +119,22 @@ async def listen(client, store, session, profile, authorize=None):
                         if not terminal and time.monotonic() - snapshot_at >= SNAPSHOT_SECONDS:
                             save_recognition(store, sid, latest, 'partial')
                             snapshot_at = time.monotonic()
+                        # 快照是累计全文，但临时修订只发生在末尾几句：只下发从第一处变化开始的分句，
+                        # 网页按 from/total 拼出整场实时记录，长录音也不必每次重发全文。
+                        start = next(
+                            (i for i, (old, new) in enumerate(zip(shown, latest)) if old != new),
+                            min(len(shown), len(latest)),
+                        )
                         await emit(
                             {
                                 'type': 'listening_transcript',
-                                'segments': latest[-LIVE_SEGMENTS:],
+                                'from': start,
+                                'segments': latest[start:],
                                 'total': len(latest),
                                 'final': terminal,
                             }
                         )
+                        shown = latest
                         if terminal:
                             return
                     if not terminal:

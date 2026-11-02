@@ -154,3 +154,22 @@ test('a flaky network that keeps dropping short parts stops instead of producing
     });
   }finally{Date.now=realNow;}
 });
+test('live transcript keeps every sentence across parts and applies tail revisions in place',async()=>{
+  await withRecorder([],async({h,flush,call})=>{
+    const seg=(id,text,speaker='1')=>({id,speaker_id:speaker,text,start_ms:0,end_ms:1});
+    const bubbles=()=>h.all().filter(n=>n.className==='listening-bubble').map(n=>n.textContent);
+    call().onEvent({type:'ready'});
+    call().onEvent({type:'listening_transcript',from:0,segments:[seg('s1','虚构第一句')],total:1});
+    call().onEvent({type:'listening_transcript',from:1,segments:[seg('s2','虚构第二','2')],total:2});
+    call().onEvent({type:'listening_transcript',from:1,segments:[seg('s2','虚构第二句修订','2')],total:2});
+    call().onEvent({type:'listening_transcript',from:2,segments:[seg('s3','虚构第三句')],total:3});
+    assert.deepEqual(bubbles(),['声音组 1虚构第一句','声音组 2虚构第二句修订','声音组 1虚构第三句']);
+    call().onEvent({type:'listening_transcript',from:1,segments:[seg('s2','虚构第二句和第三句合并','2')],total:2});
+    assert.deepEqual(bubbles(),['声音组 1虚构第一句','声音组 2虚构第二句和第三句合并']);
+    call().onEvent({type:'ending',reason:'limit'});call().onEvent({type:'saved',session:'fiction-s1',recognition_status:'complete'});call().onEvent({type:'ended',status:'ended',recognition_status:'complete'});await flush();
+    call().onEvent({type:'ready'});call().onEvent({type:'listening_transcript',from:0,segments:[seg('s1','虚构下一段第一句','unknown')],total:1});
+    assert.deepEqual(bubbles(),['声音组 1虚构第一句','声音组 2虚构第二句和第三句合并','未知声音虚构下一段第一句']);
+    assert.match(h.get('listening-live').textContent,/第2段 · 声音组重新编号/);
+    assert.match(h.get('listening-live').textContent,/暂定/);
+  });
+});
