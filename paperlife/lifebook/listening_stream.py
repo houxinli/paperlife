@@ -6,6 +6,7 @@ import time
 import wave
 from contextlib import suppress
 from .listening_asr import MAX_DURATION_MS, connect_asr
+from .listening_gain import AutoGain
 from .listening_store import detail, normalized_segments, save_recognition
 
 MAX_SECONDS = MAX_DURATION_MS // 1000
@@ -30,6 +31,7 @@ async def listen(client, store, session, profile, authorize=None):
     queue = asyncio.Queue(maxsize=QUEUE_PACKETS)
     snapshot_at = started
     shown = []
+    level = AutoGain()
     checked_at = None
     permitted = False
 
@@ -78,6 +80,8 @@ async def listen(client, store, session, profile, authorize=None):
                         new_total = audio_bytes + len(data)
                         if new_total > MAX_SECONDS * 32000 or new_total > (time.monotonic() - started + 5) * 32000:
                             raise ValueError('Audio rate or duration exceeded')
+                        # 先调到正常音量再保存和识别：外放旁边的原始电平太低，识别会漏字，回听也听不清。
+                        data = level.process(data)
                         mic.writeframes(data)
                         audio_bytes = new_total
                         # 写入先于发送；供应商慢/失败时已收到的完整混合音轨仍在。

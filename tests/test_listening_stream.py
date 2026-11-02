@@ -363,5 +363,40 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
             normalized_segments([{**late, 'end_ms': MAX_DURATION_MS + 5001}])
 
 
+class QuietAudioTests(unittest.IsolatedAsyncioTestCase):
+    asyncSetUp = StreamTests.asyncSetUp
+    asyncTearDown = StreamTests.asyncTearDown
+
+    async def test_quiet_speech_is_raised_before_saving_and_recognition(self):
+        import math
+        import struct
+        from paperlife.lifebook.listening_stream import listen
+
+        def frame(index):
+            # 虚构合成信号：说 1 秒、停 0.5 秒，说话峰值约 -40 dBFS，与真实外放旁录的电平相当。
+            amplitude = 330 if (index / 50) % 1.5 < 1 else 0
+            values = [int(amplitude * math.sin(2 * math.pi * 300 * (index * 320 + i) / 16000)) for i in range(320)]
+            return struct.pack('<320h', *values)
+
+        sent = [frame(i) for i in range(200)]
+        provider = Provider()
+
+        @asynccontextmanager
+        async def connect(_):
+            yield provider
+
+        client = Client([{'type': 'websocket.receive', 'bytes': pcm} for pcm in sent] + [STOP])
+        with patch('paperlife.lifebook.listening_stream.connect_asr', connect):
+            await asyncio.wait_for(listen(client, self.store, self.s, self.p, authorize=lambda: True), 4)
+        with wave.open(str(self.store.audio_path(self.s['id']))) as f:
+            saved = f.readframes(f.getnframes())
+        recognized = b''.join(chunk for chunk in provider.audio if chunk)
+        self.assertEqual(len(saved), len(b''.join(sent)))
+        # 保存的原声与送去识别的是同一份调整后的音频，说话声明显变大。
+        self.assertEqual(saved, recognized)
+        peak = lambda pcm: max(abs(v) for v in struct.unpack(f'<{len(pcm) // 2}h', pcm))
+        self.assertGreater(peak(saved[-32000:]), 10 * peak(b''.join(sent)[-32000:]))
+
+
 if __name__ == '__main__':
     unittest.main()
