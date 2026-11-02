@@ -5,11 +5,17 @@ import json
 import time
 import wave
 from contextlib import suppress
-from .listening_asr import connect_asr
+from .listening_asr import MAX_DURATION_MS, connect_asr
 from .listening_store import detail, normalized_segments, save_recognition
 
-MAX_SECONDS = 1200
+MAX_SECONDS = MAX_DURATION_MS // 1000
 FINAL_TIMEOUT = 8
+# 识别结果是累计快照，长录音时整份落库代价随时长增长；按间隔保存，结束时总会保存最终结果。
+SNAPSHOT_SECONDS = 5
+# 实时字幕只下发最近的分句；完整识别结束后从档案读取。
+LIVE_SEGMENTS = 30
+# 上游短暂变慢时缓冲约 30 秒网页音频（每包 20ms），超过才中断。
+QUEUE_PACKETS = 1500
 
 
 async def listen(client, store, session, profile, authorize=None):
@@ -23,13 +29,23 @@ async def listen(client, store, session, profile, authorize=None):
     tasks = []
     recognition_status = 'failed'
     status = 'interrupted'
-    queue = asyncio.Queue(maxsize=32)
+    queue = asyncio.Queue(maxsize=QUEUE_PACKETS)
+    snapshot_at = started
+    checked_at = None
+    permitted = False
 
     def allowed():
-        if authorize is not None:
-            return bool(authorize())
-        p = store.profile(profile['id'], session['user'])
-        return bool(p and p['role'] != 'reader')
+        # 撤权最迟一秒生效，与 guard 的节奏一致；不为每个 20ms 音频包查一次库。
+        nonlocal checked_at, permitted
+        now = time.monotonic()
+        if checked_at is None or now - checked_at >= 1:
+            if authorize is not None:
+                permitted = bool(authorize())
+            else:
+                p = store.profile(profile['id'], session['user'])
+                permitted = bool(p and p['role'] != 'reader')
+            checked_at = now
+        return permitted
 
     async def emit(event):
         with suppress(Exception):
@@ -95,14 +111,23 @@ async def listen(client, store, session, profile, authorize=None):
                             queue.task_done()
 
                 async def receive_provider():
-                    nonlocal latest, terminal
+                    nonlocal latest, terminal, snapshot_at
                     async for event in upstream.events():
                         if not allowed():
                             raise ValueError('Access revoked')
                         latest = normalized_segments(event['segments'])
-                        save_recognition(store, sid, latest, 'partial')
                         terminal = bool(event.get('final'))
-                        await emit({'type': 'listening_transcript', 'segments': latest, 'final': terminal})
+                        if not terminal and time.monotonic() - snapshot_at >= SNAPSHOT_SECONDS:
+                            save_recognition(store, sid, latest, 'partial')
+                            snapshot_at = time.monotonic()
+                        await emit(
+                            {
+                                'type': 'listening_transcript',
+                                'segments': latest[-LIVE_SEGMENTS:],
+                                'total': len(latest),
+                                'final': terminal,
+                            }
+                        )
                         if terminal:
                             return
                     if not terminal:

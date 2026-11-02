@@ -9,20 +9,24 @@ export class VoiceCall {
   async prepare(){
     this.context=new AudioContext();
     await this.context.resume();
-    this.stream=await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
+    this.stream=await navigator.mediaDevices.getUserMedia({audio:this.audioConstraints()});
     if(this.closed){this.stream.getTracks().forEach(t=>t.stop());return;}
     await this.context.audioWorklet.addModule(BASE+'/life/capture.js');
     this.input=this.context.createMediaStreamSource(this.stream);
     this.worklet=new AudioWorkletNode(this.context,'life-capture');
     this.mute=this.context.createGain();this.mute.gain.value=0;
     this.input.connect(this.worklet);this.worklet.connect(this.mute);this.mute.connect(this.context.destination);
-    this.worklet.port.onmessage=({data})=>{
-      if(this.ready&&this.ws?.readyState===WebSocket.OPEN){
-        if(this.ws.bufferedAmount>128000){this.onEvent({type:'error',message:'网络上传跟不上，聊天已暂停。请换稳定网络后继续。'});this.dispose();return;}
-        this.ws.send(data);
-      }
-    };
+    this.worklet.port.onmessage=({data})=>this.sendAudio(data);
   }
+  audioConstraints(){return {channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true};}
+  sendAudio(data){
+    if(this.ready&&this.ws?.readyState===WebSocket.OPEN){
+      if(this.ws.bufferedAmount>this.maxBuffered()){this.uploadStalled();return;}
+      this.ws.send(data);
+    }
+  }
+  maxBuffered(){return 128000;} // 4 秒音频；对话要求低延迟，积压就暂停。
+  uploadStalled(){this.onEvent({type:'error',message:'网络上传跟不上，聊天已暂停。请换稳定网络后继续。'});this.dispose();}
   connect(ticket){
     if(this.context)this.context.onstatechange=()=>{
       if(this.closed||this.stopping)return;

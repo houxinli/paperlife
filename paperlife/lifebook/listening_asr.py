@@ -18,10 +18,13 @@ from websockets.asyncio.client import connect
 ENDPOINT = 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async'
 RESOURCE_ID = 'volc.seedasr.sauc.duration'
 _CONNECT_SUPPORTS_PROXY = 'proxy' in inspect.signature(connect).parameters
+# 单段旁听上限。供应商文档未写单连接时长上限；result_type=full 的累计快照随时长增长，
+# 两小时含逐词时间约 2–3 MB，下面的响应上限留有余量但仍有界。
+MAX_DURATION_MS = 2 * 60 * 60 * 1000
 MAX_AUDIO_FRAME_BYTES = 64_000
-MAX_AUDIO_BYTES = 16_000 * 2 * 20 * 60
-MAX_RESPONSE_BYTES = 2_000_000
-MAX_DECOMPRESSED_BYTES = 4_000_000
+MAX_AUDIO_BYTES = 16_000 * 2 * MAX_DURATION_MS // 1000
+MAX_RESPONSE_BYTES = 4_000_000
+MAX_DECOMPRESSED_BYTES = 16_000_000
 MAX_SEGMENTS = 10_000
 MAX_TEXT_CHARS = 300_000
 AUDIO_CHUNK_BYTES = 6400  # 200ms, 16kHz / mono / signed 16-bit little-endian.
@@ -187,7 +190,7 @@ def _segments(data):
                     if (
                         type(word_start) is not int
                         or type(word_end) is not int
-                        or not 0 <= word_start <= word_end <= 20 * 60 * 1000
+                        or not 0 <= word_start <= word_end <= MAX_DURATION_MS
                     ):
                         raise ValueError
                 if 'start_time' not in item:
@@ -199,7 +202,7 @@ def _segments(data):
                 or len(text) > 16_000
                 or type(start) is not int
                 or type(end) is not int
-                or not 0 <= start <= end <= 20 * 60 * 1000
+                or not 0 <= start <= end <= MAX_DURATION_MS
             ):
                 raise ValueError
             total_chars += len(text)

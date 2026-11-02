@@ -1,8 +1,13 @@
 import {ListeningCall} from './listening-audio.js';
 
+// 续录：连续几段都没连上或撑不到一分钟（网络太差会不停切出很短的段），或断开超过时限仍接不上，就停止录音。
+const MAX_FAILED_PARTS=3,HEALTHY_PART_MS=60000,RECONNECT_MS=180000;
+// 这些错误重试也不会好（未登录、无权限、档案不存在、请求无效、当日次数用完）。
+const FATAL_STATUS=new Set([401,403,404,422,429]);
+
 export function createListening({api,profile,isGuest=()=>false,note=()=>{},fetchAudio,playback,onSaved=()=>{},canConfigure=()=>false,canStart=()=>true,onBusy=()=>{}}){
   const root=document.getElementById('listening-workspace'),review=document.getElementById('listening-review'),settings=document.getElementById('listening-settings');
-  let epoch=0,reviewEpoch=0,initialSeek=0,loadedProfile=null,call=null,recording=false,config=null,audio=null,audioUrl=null,participantCounter=0;
+  let epoch=0,reviewEpoch=0,initialSeek=0,loadedProfile=null,call=null,controller=null,recording=false,config=null,audio=null,audioUrl=null,participantCounter=0;
   const el=(tag,text='',id)=>{const n=document.createElement(tag);n.textContent=text;if(id)n.id=id;return n;};
   const context=()=>({id:profile()?.id,epoch,guest:isGuest()});
   const valid=c=>c.epoch===epoch&&c.id===profile()?.id&&c.guest===isGuest();
@@ -14,12 +19,12 @@ export function createListening({api,profile,isGuest=()=>false,note=()=>{},fetch
   function status(n,text){n.textContent=text;}
   function releaseAudio(){audio?.pause();if(audio)audio.src='';if(audioUrl)URL.revokeObjectURL(audioUrl);audio=null;audioUrl=null;}
   function setBusy(value){if(recording===value)return;recording=value;onBusy(value);}
-  function stop(){if(!recording||call?.stopping)return;call?.stop();const n=document.getElementById('listening-state');if(n)n.textContent='录音已停止，正在等待最终识别并保存…';const b=document.getElementById('listening-stop');if(b)b.disabled=true;}
+  function stop(){if(recording)controller?.stop();}
   review.addEventListener?.('close',()=>{if(!review.open){++reviewEpoch;releaseAudio();}});
   window.addEventListener('pagehide',stop);
   document.addEventListener('visibilitychange',()=>{if(document.hidden)stop();});
   function clear(){
-    ++epoch;++reviewEpoch;review.close?.();loadedProfile=null;stop();call=null;setBusy(false);config=null;releaseAudio();
+    ++epoch;++reviewEpoch;review.close?.();loadedProfile=null;controller?.abandon();controller=null;call=null;setBusy(false);config=null;releaseAudio();
     root.replaceChildren();review.replaceChildren();review.hidden=true;settings.replaceChildren();settings.hidden=true;
   }
   async function load(){
@@ -57,11 +62,13 @@ export function createListening({api,profile,isGuest=()=>false,note=()=>{},fetch
   }
   function renderRecording(c){
     root.replaceChildren();const d=el('details');d.append(el('summary','旁听家人的通话 · AI 全程静默'));
-    d.append(el('p','在另一台设备通话并打开外放，让这台 iPad 的麦克风记录双方声音。本页不会拨打电话，也不会播报。请保持前台，每次最多20分钟。'));
+    d.append(el('p','在另一台设备上视频或打电话并打开外放，把这台手机或 iPad 放在旁边，记录双方声音。本页不会拨打电话，也不会播报。'));
+    d.append(el('p','录音时请让本页一直开着，屏幕会尽量保持常亮；每段最长2小时，到时或断网后会自动接着录下一段。长时间录音请接上电源。'));
     const state=el('p','','listening-state');state.setAttribute('role','status');d.append(state);
+    const hint=el('p','','listening-hint');hint.className='muted';d.append(hint);
     const enabled=!!config.enabled&&!!config.configured;
     state.textContent=enabled?'已准备好。声音分组和实时文字只是暂定，结束后请核实身份。':'旁听识别尚未开通。请管理员启用服务并检查现有语音凭据。';
-    const form=el('form','','listening-record-form'),title=field(form,'记录标题（可选）','input','listening-title');title.maxLength=200;
+    const form=el('form','','listening-record-form'),title=field(form,'记录标题（可选）','input','listening-title');title.maxLength=180;
     const roster=el('details');roster.append(el('summary','参与者称呼（可选）'),el('p','名单只是整理线索，不会自动识别或绑定声音身份。'));form.append(roster);
     const participants=participantEditor(roster,[],true,'listening-roster');
     const consent=field(form,'在场及通话双方都已知情并同意录音和识别','input','listening-consent','','checkbox');
@@ -73,32 +80,91 @@ export function createListening({api,profile,isGuest=()=>false,note=()=>{},fetch
       if(!consent.checked){status(state,'请先确认在场及通话双方已知情并同意。');return;}
       if(!canStart()){status(state,'请先结束正在进行的语音聊天或回听，再开始旁听。');return;}
       const people=participants.values();if(people.some(p=>!p.name)){status(state,'请填写参与者称呼，或刷新后不填名单直接开始。');return;}
-      releaseAudio();setBusy(true);start.disabled=true;end.hidden=false;end.disabled=false;d.open=true;status(state,'正在申请麦克风并连接旁听服务…');
-      let saved=false,sid=null;const current=new ListeningCall(event=>{
-        if(!valid(c)||call!==current)return;
-        if(event.type==='ready')status(state,'正在静默旁听 · AI 不会出声。');
-        if(event.type==='listening_transcript'){
-          live.replaceChildren();for(const segment of event.segments||[]){const bubble=el('p');bubble.className='listening-bubble';bubble.append(el('strong',`${segment.speaker_id==='unknown'?'未知声音':`声音组 ${segment.speaker_id}`} · 暂定`),el('span',segment.text));live.append(bubble);}
-        }
-        if(event.type==='ending'){end.disabled=true;status(state,'录音已停止，正在等待最终识别并保存…');}
-        if(event.type==='saved'){
-          if(event.recognition_status){saved=true;status(state,'服务器已保留录音与识别结果。正在结束连接…');Promise.resolve(onSaved(sid)).catch(()=>{});}
-          else status(state,`已收到 ${event.seconds||0} 秒录音 · ${current.stopping?'正在等待最终识别并保存':'静默旁听中'}`);
-        }
-        if(event.type==='notice'||event.type==='error'){status(state,event.message);if(event.type==='error')stop();}
-        if(event.type==='ended'||event.type==='disconnected'){
-          call=null;setBusy(false);start.disabled=!enabled||(!c.guest&&!editable());end.hidden=true;
-          status(state,event.type==='ended'&&saved&&event.recognition_status==='complete'?'旁听已保存。可到录音档案核实声音分组和文字。':'旁听连接已结束，最终识别可能不完整。请刷新录音档案检查已保留内容。');
-        }
-      });call=current;
-      try{
-        await current.prepare();if(!valid(c)||call!==current||current.stopping){current.dispose();if(valid(c)){call=null;setBusy(false);start.disabled=false;end.hidden=true;}return;}
-        const result=await api(c.guest?'/life/guest/listening':`/life/profiles/${enc(c.id)}/listening`,'POST',{title:title.value.trim()||'旁听通话',participants:people,consent:true});
-        sid=result.id||result.session?.id;
-        if(!valid(c)||call!==current||current.stopping){current.dispose();if(valid(c)){call=null;setBusy(false);start.disabled=false;end.hidden=true;}return;}
-        current.connect(result.ticket||result.session?.ticket);
-      }catch(error){current.dispose();if(valid(c)&&call===current){call=null;setBusy(false);start.disabled=false;end.hidden=true;status(state,'旁听未能开始：'+error.message);}}
+      releaseAudio();setBusy(true);start.disabled=true;end.hidden=false;end.disabled=false;d.open=true;hint.textContent='';status(state,'正在申请麦克风并连接旁听服务…');
+      await record(c,{state,hint,start,end,live,enabled},title.value.trim()||'旁听通话',people);
     };
+  }
+  // 一次旁听由一段或多段录音组成：某段到时长上限、断网、服务重启或识别中断时，麦克风不停，
+  // 换新票据接着录下一段（各段是独立的录音档案）。用户点结束、页面切后台、无权限或长时间接不上时才真正结束。
+  async function record(c,ui,baseTitle,people){
+    const {state,hint,start,end,live}=ui;
+    const current=new ListeningCall(onEvent);call=current;
+    let part=0,sid=null,saved=false,ready=false,readyAt=0,limited=false,everReady=false,failedParts=0,lostAt=0,retry=null,finished=false,seconds=0,partSeconds=0;
+    const owned=()=>!finished&&valid(c)&&call===current;
+    const awake=keepScreenOn(()=>{if(owned())hint.textContent='这台设备不能由网页保持亮屏。请在系统设置里暂时关闭自动锁屏，录完再改回来；锁屏会结束录音。';});
+    controller={stop:userStop,abandon};
+    function release(){finished=true;clearTimeout(retry);awake.release();if(controller?.stop===userStop)controller=null;}
+    function finish(message){
+      if(finished)return;const mine=valid(c)&&call===current;release();
+      if(!current.closed)current.dispose();
+      if(!mine)return;
+      call=null;setBusy(false);start.disabled=!ui.enabled||(!c.guest&&!editable());end.hidden=true;status(state,message);
+    }
+    // 切换人物时：仍让服务器收尾保存这一段，但不再更新界面或续录。
+    function abandon(){if(finished)return;release();if(!current.closed)current.stop();}
+    function userStop(){
+      if(!owned()||current.stopping)return;
+      clearTimeout(retry);current.stop();end.disabled=true;
+      if(current.closed)finish(everReady?'旁听已结束，已收到的录音都已保存。可到录音档案核实声音分组和文字。':'旁听已结束。');
+      else status(state,'录音已停止，正在等待最终识别并保存…');
+    }
+    function total(){const s=Math.floor(seconds+partSeconds);return s<60?`${s} 秒`:s<3600?`${Math.floor(s/60)} 分 ${s%60} 秒`:`${Math.floor(s/3600)} 小时 ${Math.floor(s/60)%60} 分`;}
+    function onEvent(event){
+      if(!owned())return;
+      if(event.type==='ready'){ready=everReady=true;readyAt=Date.now();lostAt=0;status(state,`正在静默旁听${part>1?` · 第${part}段`:''} · AI 不会出声。`);}
+      if(event.type==='listening_transcript'){
+        live.replaceChildren();const segments=event.segments||[];
+        if(event.total>segments.length)live.append(el('p',`共 ${event.total} 句，这里只显示最近 ${segments.length} 句。`));
+        for(const segment of segments){const bubble=el('p');bubble.className='listening-bubble';bubble.append(el('strong',`${segment.speaker_id==='unknown'?'未知声音':`声音组 ${segment.speaker_id}`} · 暂定`),el('span',segment.text));live.append(bubble);}
+      }
+      if(event.type==='ending'){if(current.stopping){end.disabled=true;status(state,'录音已停止，正在等待最终识别并保存…');}else{limited=true;status(state,`第${part}段已到时长上限，正在保存并接着录下一段…`);}}
+      if(event.type==='saved'){
+        if(event.recognition_status){saved=true;if(current.stopping)status(state,'服务器已保留录音与识别结果。正在结束连接…');Promise.resolve(onSaved(sid)).catch(()=>{});}
+        else{partSeconds=event.seconds||0;status(state,`已收到 ${total()} 录音${part>1?` · 第${part}段`:''} · ${current.stopping?'正在等待最终识别并保存':'静默旁听中'}`);}
+      }
+      if(event.type==='notice'||event.type==='error')status(state,event.message);
+      if(event.type==='ended'||event.type==='disconnected'){
+        seconds+=partSeconds;partSeconds=0;
+        if(current.stopping||current.closed){finish(event.type==='ended'&&saved&&event.recognition_status==='complete'?'旁听已保存。可到录音档案核实声音分组和文字。':'旁听连接已结束，最终识别可能不完整。请刷新录音档案检查已保留内容。');return;}
+        partLost(event.type==='ended');
+      }
+    }
+    function partLost(closedByServer){
+      const wasReady=ready;ready=false;
+      if(!everReady){finish('旁听未能开始：连接没有建立。请检查服务配置后重试。');return;}
+      if(wasReady&&(limited||Date.now()-readyAt>=HEALTHY_PART_MS))failedParts=0;else failedParts++;
+      if(!lostAt)lostAt=Date.now();
+      if(failedParts>=MAX_FAILED_PARTS||Date.now()-lostAt>RECONNECT_MS){finish(`多次尝试都没能接上，已停止录音。已收到的 ${total()} 录音都已保存，请稍后再开始。`);return;}
+      status(state,closedByServer&&wasReady?`第${part}段已保存，正在接着录下一段…（已录 ${total()}）`:`连接中断，正在重新连接…（已录 ${total()}）`);
+      schedule();
+    }
+    function schedule(){
+      clearTimeout(retry);const waited=Date.now()-(lostAt||Date.now());
+      retry=setTimeout(()=>{retry=null;void startPart();},waited<10000?1500:5000);
+    }
+    // 两段之间麦克风被系统暂停（来电、音频中断）时，录音对象会自行停止，没有连接可以等，直接收尾。
+    function stopped(){if(!current.stopping&&!current.closed)return false;finish(`录音已停止。已收到的 ${total()} 录音都已保存。`);return true;}
+    async function startPart(){
+      if(!owned()||stopped())return;
+      const number=part+1;
+      try{
+        const result=await api(c.guest?'/life/guest/listening':`/life/profiles/${enc(c.id)}/listening`,'POST',{title:number>1?`${baseTitle}（第${number}段）`:baseTitle,participants:people,consent:true});
+        if(!owned()||stopped())return;
+        part=number;sid=result.id||result.session?.id;saved=false;ready=false;limited=false;
+        current.connect(result.ticket||result.session?.ticket);
+      }catch(error){
+        if(!owned()||stopped())return;
+        if(!everReady||FATAL_STATUS.has(error.status)){finish('旁听未能开始：'+error.message);return;}
+        // 上一段还在收尾（409）、网络或服务暂时不可用时，在时限内继续重试。
+        if(Date.now()-lostAt>RECONNECT_MS){finish(`多次尝试都没能接上，已停止录音。已收到的 ${total()} 录音都已保存，请稍后再开始。`);return;}
+        status(state,`正在重新连接…（已录 ${total()}）`);schedule();
+      }
+    }
+    try{
+      await current.prepare();
+      if(!owned()||current.stopping){finish('旁听已取消。');return;}
+    }catch(error){finish('旁听未能开始：'+(error?.message||'无法使用麦克风'));return;}
+    await startPart();
   }
   async function openSession(id,seconds=0){
     if(!profile()?.id)return;initialSeek=Math.max(0,Number(seconds)||0);const c=context(),request=++reviewEpoch;releaseAudio();review.hidden=false;if(!review.open)review.showModal?.();review.replaceChildren(el('p','正在载入旁听原文…'));
@@ -168,5 +234,19 @@ export function createListening({api,profile,isGuest=()=>false,note=()=>{},fetch
     if(!c.guest&&(data.versions||[]).length){const history=el('details');history.append(el('summary','归属校订历史（只读）'));for(const v of data.versions)history.append(button(`查看版本 ${v.version}`,async()=>{try{const result=await api(detailPath(session.id,c)+`/versions/${enc(v.version)}`);if(current()){releaseAudio();renderReview(result,c,request,true);}}catch(error){if(current())status(message,error.message);}}));review.append(history);}
   }
   return {load,clear,openSession,get active(){return recording;}};
+}
+// 系统自动锁屏会让页面转入后台并结束录音，所以录音期间申请屏幕常亮；系统中途收回（如省电）时在前台再申请几次。
+function keepScreenOn(onUnavailable){
+  const wakeLock=globalThis.navigator?.wakeLock;let lock=null,active=true,renewals=0;
+  async function request(){
+    if(!active||lock)return;
+    try{
+      const next=await wakeLock.request('screen');
+      if(!active){next.release?.()?.catch?.(()=>{});return;}
+      lock=next;lock.addEventListener?.('release',()=>{lock=null;if(active&&!globalThis.document?.hidden&&renewals++<5)void request();});
+    }catch{if(active)onUnavailable();}
+  }
+  if(wakeLock?.request)void request();else onUnavailable();
+  return {release(){active=false;const held=lock;lock=null;held?.release?.()?.catch?.(()=>{});}};
 }
 function formatTime(ms){const seconds=Math.floor(Math.max(0,Number(ms)||0)/1000);return `${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`;}
