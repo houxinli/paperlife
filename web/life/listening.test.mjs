@@ -64,25 +64,27 @@ test('ongoing recognition and readers cannot edit identity even when detail offe
   const d=detail();d.session.status='active';d.recognition_status='partial';const h=setup(async()=>d);await h.ui.openSession('fiction-s');assert.equal(h.get('listening-save'),undefined);
   const r=setup(baseApi);r.setProfile({id:'fiction-a',role:'reader'});await r.ui.openSession('fiction-s');assert.equal(r.get('listening-save'),undefined);
 });
-async function withRecorder(responses,run,{wakeLock}={}){
-  const original={prepare:ListeningCall.prototype.prepare,connect:ListeningCall.prototype.connect,stop:ListeningCall.prototype.stop,setTimeout:globalThis.setTimeout,clearTimeout:globalThis.clearTimeout,navigator:Object.getOwnPropertyDescriptor(globalThis,'navigator')};
-  const timers=new Map();let timerId=0,call,prepares=0,stops=0;const tickets=[],posts=[];
+async function withRecorder(responses,run,{wakeLock,guest=false,notes=true}={}){
+  const original={prepare:ListeningCall.prototype.prepare,connect:ListeningCall.prototype.connect,stop:ListeningCall.prototype.stop,sendControl:ListeningCall.prototype.sendControl,setTimeout:globalThis.setTimeout,clearTimeout:globalThis.clearTimeout,navigator:Object.getOwnPropertyDescriptor(globalThis,'navigator')};
+  const timers=new Map();let timerId=0,call,prepares=0,stops=0;const tickets=[],posts=[],controls=[];
   globalThis.setTimeout=(fn,ms)=>{timers.set(++timerId,{fn,ms});return timerId;};globalThis.clearTimeout=id=>timers.delete(id);
   const flush=async()=>{for(const [id,{fn}] of [...timers]){timers.delete(id);await fn();}};
   Object.defineProperty(globalThis,'navigator',{value:wakeLock?{wakeLock}:{},configurable:true});
   ListeningCall.prototype.prepare=async function(){prepares++;call=this;};
   ListeningCall.prototype.connect=function(ticket){tickets.push(ticket);this.ready=false;};
   ListeningCall.prototype.stop=function(){stops++;this.stopping=true;};
+  ListeningCall.prototype.sendControl=function(data){controls.push(JSON.parse(JSON.stringify(data)));};
   try{
     const h=setup(async(path,method,body)=>{
       if(method!=='POST')return provider;posts.push(body);const next=responses.shift();
       if(next instanceof Error)throw next;return next||{id:`fiction-s${posts.length}`,ticket:`fiction-t${posts.length}`};
-    });
+    },{guest});
     await h.ui.load();h.get('listening-title').value='虚构标题';h.get('listening-consent').checked=true;
+    if(h.get('listening-notes-enabled'))h.get('listening-notes-enabled').checked=notes;
     await h.get('listening-record-form').onsubmit({preventDefault(){}});
-    await run({h,flush,timers,posts,tickets,call:()=>call,counts:()=>({prepares,stops})});
+    await run({h,flush,timers,posts,tickets,controls,call:()=>call,counts:()=>({prepares,stops})});
   }finally{
-    Object.assign(ListeningCall.prototype,{prepare:original.prepare,connect:original.connect,stop:original.stop});
+    Object.assign(ListeningCall.prototype,{prepare:original.prepare,connect:original.connect,stop:original.stop,sendControl:original.sendControl});
     globalThis.setTimeout=original.setTimeout;globalThis.clearTimeout=original.clearTimeout;
     if(original.navigator)Object.defineProperty(globalThis,'navigator',original.navigator);
   }
@@ -172,4 +174,56 @@ test('live transcript keeps every sentence across parts and applies tail revisio
     assert.match(h.get('listening-live').textContent,/第2段 · 声音组重新编号/);
     assert.match(h.get('listening-live').textContent,/暂定/);
   });
+});
+test('voices can be named during recording; names show at once and are sent as labels per part',async()=>{
+  await withRecorder([],async({h,flush,call,controls,posts})=>{
+    const seg=(id,text,speaker)=>({id,speaker_id:speaker,text,start_ms:0,end_ms:1});
+    const bubbles=()=>h.all().filter(n=>n.className==='listening-bubble').map(n=>n.textContent);
+    // 名单为空：补上档案本人和“我”，开始时就带给服务器，档案里核实时可以直接选。
+    assert.deepEqual(posts[0].participants.map(p=>[p.id,p.name,p.is_subject]),[['subject','档案主体',true],['me','我',false]]);
+    call().onEvent({type:'ready'});assert.deepEqual(controls,[{type:'notes',enabled:true}]);
+    call().onEvent({type:'listening_transcript',from:0,segments:[seg('s1','虚构：那年住在河边','1'),seg('s2','虚构：后来呢','2'),seg('s3','虚构：听不清','unknown')],total:3});
+    assert.ok(h.get('listening-voice-0'));assert.ok(h.get('listening-voice-1'));assert.equal(h.get('listening-voice-2'),undefined);
+    assert.deepEqual(h.get('listening-voice-0').children.map(o=>o.value),['','subject','me','__new']);
+    h.get('listening-voice-0').value='subject';h.get('listening-voice-0').onchange();
+    assert.deepEqual(bubbles(),['档案主体虚构：那年住在河边','声音组 2虚构：后来呢','未知声音虚构：听不清']);
+    assert.deepEqual(controls.at(-1),{type:'labels',participants:posts[0].participants,labels:{1:'subject'}});
+    // “其他人…”：现场加一个名字，所有下拉框都能选到。
+    h.get('listening-voice-1').value='__new';h.get('listening-voice-1').onchange();
+    assert.equal(h.get('listening-voice-1').value,'');assert.equal(h.get('listening-voice-name-1').hidden,false);
+    h.get('listening-voice-name-1').value='虚构舅舅';await h.all().filter(n=>n.tagName==='button'&&n.textContent==='添加')[1].onclick();
+    assert.deepEqual(bubbles(),['档案主体虚构：那年住在河边','虚构舅舅虚构：后来呢','未知声音虚构：听不清']);
+    assert.equal(controls.at(-1).participants.at(-1).name,'虚构舅舅');assert.equal(controls.at(-1).labels[2],controls.at(-1).participants.at(-1).id);
+    assert.ok(h.get('listening-voice-0').children.some(o=>o.textContent==='虚构舅舅'));
+    // 下一段：声音组重新编号，起名重来；上一段的名字留在字幕里。
+    call().onEvent({type:'ending',reason:'limit'});call().onEvent({type:'saved',session:'fiction-s1',recognition_status:'complete',labels_saved:true});call().onEvent({type:'ended',status:'ended',recognition_status:'complete'});await flush();
+    assert.equal(posts[1].participants.at(-1).name,'虚构舅舅');
+    call().onEvent({type:'ready'});assert.equal(h.get('listening-voice-0'),undefined);
+    call().onEvent({type:'listening_transcript',from:0,segments:[seg('s1','虚构：下一段','1')],total:1});
+    assert.deepEqual(bubbles().slice(-2),['未知声音虚构：听不清','声音组 1虚构：下一段']);assert.equal(bubbles()[0],'档案主体虚构：那年住在河边');
+    h.get('listening-stop').onclick();call().onEvent({type:'saved',session:'fiction-s2',recognition_status:'complete',labels_saved:false});call().onEvent({type:'ended',status:'ended',recognition_status:'complete'});
+    assert.match(h.get('listening-state').textContent,/已有 1 段按你的命名保存了声音归属/);
+  });
+});
+test('AI notes add points, replace follow-up questions and show failures without stopping',async()=>{
+  await withRecorder([],async({h,call})=>{
+    call().onEvent({type:'ready'});
+    assert.equal(h.get('listening-notes').hidden,false);assert.match(h.get('listening-notes').textContent,/大约每分钟/);
+    call().onEvent({type:'listening_notes',points:[{text:'那年住在河边',speaker:'档案主体'}],questions:[{text:'河边的房子什么样？',why:'刚提到'}]});
+    call().onEvent({type:'listening_notes',points:[{text:'有一座木桥'}],questions:[{text:'桥是谁修的？'}]});
+    const text=h.get('listening-notes').textContent;
+    assert.match(text,/档案主体：那年住在河边/);assert.match(text,/有一座木桥/);assert.match(text,/桥是谁修的？/);assert.doesNotMatch(text,/河边的房子什么样/);
+    call().onEvent({type:'listening_notes',error:'AI 笔记这次没有生成，稍后会再试。'});
+    assert.match(h.get('listening-notes').textContent,/这次没有生成/);assert.match(h.get('listening-notes').textContent,/有一座木桥/);assert.equal(h.ui.active,true);
+  });
+  await withRecorder([],async({h,call,controls})=>{
+    call().onEvent({type:'ready'});assert.deepEqual(controls,[]);assert.equal(h.get('listening-notes').hidden,true);
+  },{notes:false});
+});
+test('narrator links record without the naming bar or notes',async()=>{
+  await withRecorder([],async({h,call,controls,posts})=>{
+    assert.equal(h.get('listening-notes-enabled'),undefined);assert.deepEqual(posts[0].participants,[]);
+    call().onEvent({type:'ready'});call().onEvent({type:'listening_transcript',from:0,segments:[{id:'s1',speaker_id:'1',text:'虚构',start_ms:0,end_ms:1}],total:1});
+    assert.equal(h.get('listening-voice-0'),undefined);assert.equal(h.get('listening-voices').hidden,true);assert.deepEqual(controls,[]);
+  },{guest:true});
 });

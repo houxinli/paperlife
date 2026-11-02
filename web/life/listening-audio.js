@@ -49,6 +49,8 @@ export class ListeningCall extends VoiceCall {
     try{ws.close();}catch{}
   }
   partLost(){this.closePart();this.onEvent({type:'disconnected'});}
+  // 录音中的声音标注和 AI 笔记开关；只发给已就绪的当前这一段。
+  sendControl(data){if(this.ready&&this.ws?.readyState===WebSocket.OPEN)this.ws.send(JSON.stringify(data));}
   maxBuffered(){return 640000;} // 旁听不要求实时，容忍约 20 秒上传积压再换一段，减少分段。
   uploadStalled(){this.onEvent({type:'notice',message:'网络上传跟不上，正在重新连接…'});this.partLost();}
   play(){} // Defence in depth: never create an output source, even when called directly.

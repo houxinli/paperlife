@@ -309,22 +309,13 @@ async def _realtime_text(store, config, instruction, material):
         raise ValueError('editor_provider_response') from None
 
 
-async def generate_editor(store, stage, payload):
-    instruction = stage_prompt(stage)
-    if not isinstance(payload, dict):
-        raise ValueError('invalid_editor_payload')
-    try:
-        material = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(',', ':'))
-    except (TypeError, ValueError, RecursionError):
-        raise ValueError('invalid_editor_payload') from None
-    if len(material.encode('utf-8')) > MAX_INPUT_BYTES:
-        raise ValueError('editor_input_limit')
-    material = task_message(stage, material)
-    config = _read_config(store)['extractor' if stage == 'extract' else 'writer']
+async def generate_json(store, role, instruction, material, validate, timeout=TIMEOUT_SECONDS):
+    """按角色配置调用文本模型，返回 (校验过的 JSON 对象, 所用配置)；错误只放行本模块的固定错误码。"""
+    config = _read_config(store)[role]
     if not _configured(store, config):
         raise ValueError('provider_unconfigured')
     try:
-        async with asyncio.timeout(TIMEOUT_SECONDS):
+        async with asyncio.timeout(timeout):
             if config['provider'] == 'doubao_realtime':
                 text = await _realtime_text(store, config, instruction, material)
             else:
@@ -341,11 +332,32 @@ async def generate_editor(store, stage, payload):
     if len(text.encode('utf-8')) > MAX_OUTPUT_BYTES:
         raise ValueError('editor_output_limit')
     try:
-        output = _validate_output(stage, parse_output(text.strip()))
+        output = validate(parse_output(text.strip()))
         # 标准库解析器默认接受 NaN/Infinity，公开输出契约必须仍是标准 JSON。
         json.dumps(output, allow_nan=False)
     except (ValueError, TypeError, RecursionError, KeyError):
         raise ValueError('invalid_editor_output') from None
+    return output, config
+
+
+async def generate_editor(store, stage, payload):
+    instruction = stage_prompt(stage)
+    if not isinstance(payload, dict):
+        raise ValueError('invalid_editor_payload')
+    try:
+        material = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(',', ':'))
+    except (TypeError, ValueError, RecursionError):
+        raise ValueError('invalid_editor_payload') from None
+    if len(material.encode('utf-8')) > MAX_INPUT_BYTES:
+        raise ValueError('editor_input_limit')
+    material = task_message(stage, material)
+    output, config = await generate_json(
+        store,
+        'extractor' if stage == 'extract' else 'writer',
+        instruction,
+        material,
+        lambda value: _validate_output(stage, value),
+    )
     return {
         'output': output,
         'metadata': {

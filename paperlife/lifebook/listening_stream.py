@@ -2,12 +2,15 @@
 
 import asyncio
 import json
+import logging
 import time
 import wave
 from contextlib import suppress
 from .listening_asr import MAX_DURATION_MS, connect_asr
 from .listening_gain import AutoGain
-from .listening_store import detail, normalized_segments, save_recognition
+from .listening_notes import live_notes
+from .listening_store import IDENT, annotate, detail, normalized_segments, save_recognition, validate_participants
+from .materials import MaterialError
 
 MAX_SECONDS = MAX_DURATION_MS // 1000
 FINAL_TIMEOUT = 8
@@ -15,6 +18,13 @@ FINAL_TIMEOUT = 8
 SNAPSHOT_SECONDS = 5
 # 上游短暂变慢时缓冲约 30 秒网页音频（每包 20ms），超过才中断。
 QUEUE_PACKETS = 1500
+# 控制消息包含录音中手动标注的参与者名单，最多 30 人。
+CONTROL_LIMIT = 8000
+# AI 实时笔记：约每分钟一次，新增识别文字太少就跳过；一次调用最多等这么久。
+NOTES_SECONDS = 60
+NOTES_MIN_CHARS = 60
+NOTES_TIMEOUT = 90
+log = logging.getLogger(__name__)
 
 
 async def listen(client, store, session, profile, authorize=None):
@@ -34,6 +44,11 @@ async def listen(client, store, session, profile, authorize=None):
     level = AutoGain()
     checked_at = None
     permitted = False
+    helpers = []
+    # 录音中由家人手动标注的声音身份（专属链接的长辈不能修改身份，忽略）；收尾时作为第一版归属保存。
+    labels = {'participants': None, 'bindings': {}}
+    member = session['user'] > 0
+    notes = {'enabled': False, 'off': False, 'chars': 0, 'known': []}
 
     def allowed():
         # 撤权最迟一秒生效，与 guard 的节奏一致；不为每个 20ms 音频包查一次库。
@@ -54,6 +69,49 @@ async def listen(client, store, session, profile, authorize=None):
 
     async def ending(reason):
         await emit({'type': 'ending', 'session': sid, 'reason': reason})
+
+    def remember_labels(control):
+        # 格式不对只忽略这一次标注，不能因此中断录音。
+        try:
+            people = validate_participants(control.get('participants'))
+            ids = {p['id'] for p in people}
+            raw = control.get('labels')
+            if not isinstance(raw, dict) or len(raw) > 50:
+                raise MaterialError('声音标注无效')
+            bindings = {}
+            for speaker, pid in raw.items():
+                if not isinstance(speaker, str) or not IDENT.fullmatch(speaker) or (pid is not None and pid not in ids):
+                    raise MaterialError('声音标注无效')
+                if pid is not None:
+                    bindings[speaker] = pid
+        except MaterialError:
+            log.warning('listening labels ignored (session=%s)', sid)
+            return
+        labels['participants'], labels['bindings'] = people, bindings
+
+    def names():
+        people = {p['id']: p['name'] for p in labels['participants'] or []}
+        return {speaker: people[pid] for speaker, pid in labels['bindings'].items() if pid in people}
+
+    async def take_notes():
+        # 只给正在通话的家人看的提示，不入档案；任何失败都不影响录音和识别。
+        while True:
+            await asyncio.sleep(NOTES_SECONDS)
+            chars = sum(len(s['text']) for s in latest)
+            if not notes['enabled'] or notes['off'] or chars - notes['chars'] < NOTES_MIN_CHARS:
+                continue
+            notes['chars'] = chars
+            try:
+                result = await live_notes(store, profile['name'], latest, names(), notes['known'], NOTES_TIMEOUT)
+            except Exception as error:
+                notes['off'] = str(error) == 'provider_unconfigured'
+                log.warning('listening notes failed with %s (session=%s)', type(error).__name__, sid)
+                message = '文本模型尚未配置，AI 笔记已关闭。' if notes['off'] else 'AI 笔记这次没有生成，稍后会再试。'
+                await emit({'type': 'listening_notes', 'error': message})
+                continue
+            fresh = [point for point in result['points'] if point['text'] not in notes['known']]
+            notes['known'].extend(point['text'] for point in fresh)
+            await emit({'type': 'listening_notes', 'points': fresh, 'questions': result['questions']})
 
     try:
         if not allowed():
@@ -87,13 +145,17 @@ async def listen(client, store, session, profile, authorize=None):
                         # 写入先于发送；供应商慢/失败时已收到的完整混合音轨仍在。
                         queue.put_nowait(data)
                     elif message.get('text'):
-                        if len(message['text']) > 1000:
+                        if len(message['text']) > CONTROL_LIMIT:
                             raise ValueError('Control too large')
                         control = json.loads(message['text'])
                         if control.get('type') == 'stop':
                             requested = True
                             await ending('button')
                             return
+                        if control.get('type') == 'notes':
+                            notes['enabled'] = control.get('enabled') is True
+                        elif control.get('type') == 'labels' and member:
+                            remember_labels(control)
 
             receiver = asyncio.create_task(receive_client())
             tasks.append(receiver)
@@ -160,7 +222,11 @@ async def listen(client, store, session, profile, authorize=None):
                 provider = asyncio.create_task(receive_provider())
                 watcher = asyncio.create_task(guard())
                 tasks.extend((sender, provider, watcher))
+                # 笔记不参与“谁先结束”的判断：它不会结束录音，收尾时直接取消。
+                helpers.append(asyncio.create_task(take_notes()))
                 done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                for task in helpers:
+                    task.cancel()
                 for task in done:
                     task.result()
                 # Stop/disconnect/limit finishes queued PCM first, then sends the final package.
@@ -186,16 +252,25 @@ async def listen(client, store, session, profile, authorize=None):
             {'type': 'error', 'message': '旁听识别连接失败或中断；已接收的录音与临时识别已保留。请检查服务配置后重试。'}
         )
     finally:
-        for task in tasks:
+        for task in tasks + helpers:
             task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        if tasks or helpers:
+            await asyncio.gather(*tasks, *helpers, return_exceptions=True)
         recognition_status = (
             'complete' if terminal and not failed else ('incomplete' if latest or audio_bytes else 'failed')
         )
         with suppress(Exception):
             save_recognition(store, sid, latest, recognition_status)
         store.finish_session(sid, status)
+        labels_saved = False
+        # 只保存最终识别里确实出现的声音组；之后仍可在录音档案里修改，修改会追加新版本。
+        bindings = {k: v for k, v in labels['bindings'].items() if k in {s['speaker_id'] for s in latest}}
+        if labels['participants'] and bindings and recognition_status in ('complete', 'incomplete'):
+            try:
+                annotate(store, sid, 0, labels['participants'], bindings, {}, session['user'])
+                labels_saved = True
+            except Exception as error:
+                log.warning('listening labels not saved: %s (session=%s)', type(error).__name__, sid)
         from .editor_jobs import enqueue_session
 
         enqueue_session(store, sid)
@@ -205,6 +280,7 @@ async def listen(client, store, session, profile, authorize=None):
                 'session': sid,
                 'seconds': round(audio_bytes / 32000, 1),
                 'recognition_status': recognition_status,
+                'labels_saved': labels_saved,
             }
         )
         await emit({'type': 'ended', 'session': sid, 'status': status, 'recognition_status': recognition_status})
