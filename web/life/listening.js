@@ -89,7 +89,7 @@ export function createListening({api,profile,isGuest=()=>false,note=()=>{},fetch
   async function record(c,ui,baseTitle,people){
     const {state,hint,start,end,live}=ui;
     const current=new ListeningCall(onEvent);call=current;
-    let part=0,sid=null,saved=false,ready=false,readyAt=0,limited=false,everReady=false,failedParts=0,lostAt=0,retry=null,finished=false,seconds=0,partSeconds=0;
+    let part=0,sid=null,saved=false,ready=false,readyAt=0,limited=false,everReady=false,failedParts=0,lostAt=0,retry=null,finished=false,seconds=0,partSeconds=0,livePart=null;
     const owned=()=>!finished&&valid(c)&&call===current;
     const awake=keepScreenOn(()=>{if(owned())hint.textContent='这台设备不能由网页保持亮屏。请在系统设置里暂时关闭自动锁屏，录完再改回来；锁屏会结束录音。';});
     controller={stop:userStop,abandon};
@@ -108,15 +108,31 @@ export function createListening({api,profile,isGuest=()=>false,note=()=>{},fetch
       if(current.closed)finish(everReady?'旁听已结束，已收到的录音都已保存。可到录音档案核实声音分组和文字。':'旁听已结束。');
       else status(state,'录音已停止，正在等待最终识别并保存…');
     }
+    // 实时记录：整场录音的字幕从头保留到尾，跨段不清空。服务器只发从第一处变化开始的分句（from/total），
+    // 这里原地更新已有气泡、追加新句，句子被合并时按 total 截掉多余的旧句。
+    function beginLivePart(){
+      const box=el('section'),header=part>1?el('p',`第${part}段 · 声音组重新编号`):null;box.className='listening-live-part';
+      if(header){header.className='muted';box.append(header);}
+      livePart={box,header,bubbles:[]};live.append(box);
+    }
+    function showTranscript(event){
+      if(!livePart)beginLivePart();
+      const bubbles=livePart.bubbles,segments=Array.isArray(event.segments)?event.segments:[];
+      const from=Math.min(Number.isInteger(event.from)?event.from:0,bubbles.length),total=Number.isInteger(event.total)?event.total:from+segments.length;
+      const stick=!(live.scrollHeight-live.scrollTop-live.clientHeight>48);
+      segments.forEach((segment,offset)=>{
+        let bubble=bubbles[from+offset];
+        if(!bubble){const node=el('p'),who=el('strong'),text=el('span');node.className='listening-bubble';node.append(who,text);bubble={node,who,text};bubbles.push(bubble);livePart.box.append(node);}
+        bubble.who.textContent=segment.speaker_id==='unknown'?'未知声音':`声音组 ${segment.speaker_id}`;bubble.text.textContent=segment.text;
+      });
+      if(bubbles.length>total){bubbles.length=total;livePart.box.replaceChildren(...(livePart.header?[livePart.header]:[]),...bubbles.map(b=>b.node));}
+      if(stick)live.scrollTop=live.scrollHeight;
+    }
     function total(){const s=Math.floor(seconds+partSeconds);return s<60?`${s} 秒`:s<3600?`${Math.floor(s/60)} 分 ${s%60} 秒`:`${Math.floor(s/3600)} 小时 ${Math.floor(s/60)%60} 分`;}
     function onEvent(event){
       if(!owned())return;
-      if(event.type==='ready'){ready=everReady=true;readyAt=Date.now();lostAt=0;status(state,`正在静默旁听${part>1?` · 第${part}段`:''} · AI 不会出声。`);}
-      if(event.type==='listening_transcript'){
-        live.replaceChildren();const segments=event.segments||[];
-        if(event.total>segments.length)live.append(el('p',`共 ${event.total} 句，这里只显示最近 ${segments.length} 句。`));
-        for(const segment of segments){const bubble=el('p');bubble.className='listening-bubble';bubble.append(el('strong',`${segment.speaker_id==='unknown'?'未知声音':`声音组 ${segment.speaker_id}`} · 暂定`),el('span',segment.text));live.append(bubble);}
-      }
+      if(event.type==='ready'){ready=everReady=true;readyAt=Date.now();lostAt=0;beginLivePart();status(state,`正在静默旁听${part>1?` · 第${part}段`:''} · AI 不会出声。`);}
+      if(event.type==='listening_transcript')showTranscript(event);
       if(event.type==='ending'){if(current.stopping){end.disabled=true;status(state,'录音已停止，正在等待最终识别并保存…');}else{limited=true;status(state,`第${part}段已到时长上限，正在保存并接着录下一段…`);}}
       if(event.type==='saved'){
         if(event.recognition_status){saved=true;if(current.stopping)status(state,'服务器已保留录音与识别结果。正在结束连接…');Promise.resolve(onSaved(sid)).catch(()=>{});}
@@ -160,6 +176,7 @@ export function createListening({api,profile,isGuest=()=>false,note=()=>{},fetch
         status(state,`正在重新连接…（已录 ${total()}）`);schedule();
       }
     }
+    const note=el('p','实时文字是边听边识别的暂定结果，后面的话会让前面几句继续修正；结束后以录音档案为准。');note.className='muted';live.replaceChildren(note);
     try{
       await current.prepare();
       if(!owned()||current.stopping){finish('旁听已取消。');return;}

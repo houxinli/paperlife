@@ -280,19 +280,35 @@ class StreamTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(statuses[-1], 'complete')
                 self.assertEqual(len(listening_store.detail(self.store, self.s['id'])['segments']), 4)
 
-    async def test_live_captions_carry_only_recent_segments(self):
+    async def test_live_captions_send_changed_tail_that_rebuilds_the_full_transcript(self):
         from paperlife.lifebook.listening_store import detail
-        from paperlife.lifebook.listening_stream import LIVE_SEGMENTS
 
-        many = fictional_segments(LIVE_SEGMENTS + 10)
-        client, _ = await self.run_stream(provider=ScriptedProvider([many], many))
+        a, b, c = fictional_segments(3)
+        revised = {**b, 'text': '虚构第2句，修订后更完整。'}
+        merged = {**b, 'text': '虚构第2句和第3句合成一句。'}
+        many = fictional_segments(200)
+        partials = [[a], [a, b], [a, revised], [a, revised, c], [a, merged], many]
+        client, _ = await self.run_stream(provider=ScriptedProvider(partials, many))
         live = [e for e in client.sent if e['type'] == 'listening_transcript']
-        self.assertEqual([len(e['segments']) for e in live], [LIVE_SEGMENTS, LIVE_SEGMENTS])
-        self.assertEqual({e['total'] for e in live}, {LIVE_SEGMENTS + 10})
-        self.assertEqual(live[0]['segments'][0]['id'], 's11')
+        self.assertEqual(
+            [(e['from'], len(e['segments']), e['total']) for e in live[:5]],
+            [
+                (0, 1, 1),  # 第一句
+                (1, 1, 2),  # 新增一句只发这一句
+                (1, 1, 2),  # 临时修订只重发被改的那一句
+                (2, 1, 3),
+                (1, 1, 2),  # 两句合并：从变化处重发，并用 total 截掉多余的旧句
+            ],
+        )
+        # 网页按 from/total 拼接后得到与档案一致的全文，不再只显示最近几句。
+        rebuilt = []
+        for event in live:
+            rebuilt[event['from'] :] = event['segments']
+            del rebuilt[event['total'] :]
         self.assertTrue(live[-1]['final'])
-        # 下发裁剪不影响档案里的完整识别。
-        self.assertEqual(len(detail(self.store, self.s['id'])['segments']), LIVE_SEGMENTS + 10)
+        self.assertEqual(live[-1]['segments'], [])
+        self.assertEqual(rebuilt, detail(self.store, self.s['id'])['original_segments'])
+        self.assertEqual(len(rebuilt), 200)
 
     async def test_access_is_rechecked_once_per_second_and_revocation_still_ends(self):
         from paperlife.lifebook.listening_stream import listen
