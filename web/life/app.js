@@ -19,8 +19,10 @@ if(guestMode){
   if(entry.hash)window.history.replaceState(null,'',location.pathname+location.search+entry.hash);
 }
 let wantedProfile=params.get('profile');
-let view=params.get('view')==='read'?'read':params.get('view')==='book'?'book':'talk';
-document.body.classList.toggle('simple',guestMode||view!=='read');
+// 家人账号的首页是“记录通话”（家人和长辈视频时旁听记录）；长辈的专属链接仍是 AI 陪聊。
+const requestedView=params.get('view');
+let view=['read','book','talk','listen'].includes(requestedView)?requestedView:guestMode?'talk':'listen';
+document.body.classList.toggle('simple',guestMode||view==='talk'||view==='book');
 let token='';try{token=localStorage.getItem('paperlife_session_token')||'';}catch{}
 const note=text=>{$('notice').textContent=text;};
 const playback=createPlaybackGuard({isRecording:()=>!!call||listening.active,getPlayers:()=>document.querySelectorAll('audio')});
@@ -126,7 +128,7 @@ $('start').onclick=action(async()=>{
 $('stop').onclick=()=>{call?.stop();$('call-state').textContent='正在结束并保存…';if(call?.closed){call=null;busy(false);}};
 $('silence').onclick=()=>call?.stopAnswer();
 $('resume-audio').onclick=action(async()=>{await call?.resumeAudio();});
-$('family-view').onclick=()=>setView('read');
+$('family-view').onclick=()=>setView('listen');
 window.addEventListener('pagehide',()=>call?.dispose());
 document.addEventListener('visibilitychange',()=>{if(document.hidden&&call){call.stop();note('页面切到后台，聊天已结束；回来后可继续。');}});
 async function openEditor(id,seekSeconds=null){
@@ -174,12 +176,13 @@ const listening=createListening({api,profile:()=>profile,isGuest:()=>guestMode,n
   canStart:()=>!call,
   onBusy:value=>{
     if(value)playback.invalidate();
-    for(const id of ['profiles','new-profile','topic','save-profile','talk-view','read-view','family-view'])$(id).disabled=value||!!call;
+    for(const id of ['profiles','new-profile','topic','save-profile','listen-view','talk-view','read-view','family-view'])$(id).disabled=value||!!call;
     $('start').disabled=value||!provider?.configured||profile?.role==='reader';
     $('narrator-actions').hidden=value||view!=='talk';
     document.body.classList.toggle('listening-active',value);
   },
-  onSaved:async()=>{await narrator.history();if(!guestMode){await history();await book.load();await chapters.load();}}
+  onSaved:async()=>{await narrator.history();if(!guestMode){await history();await book.load();await chapters.load();}},
+  onOpenBook:()=>{setView('read');document.querySelector('[data-layer="review"]')?.click();}
 });
 const narrator=createNarrator({api,profile:()=>profile,isGuest:()=>guestMode,note,fetchAudio:authorizedAudio,playback,openListening:(id,seconds)=>listening.openSession(id,seconds)});
 async function refreshNames(){
@@ -193,20 +196,23 @@ $('toggle-conversation').onclick=()=>{
 };
 $('chat-tab').onclick=()=>setView('talk');$('my-book-tab').onclick=()=>{setView('book');narrator.book().catch(e=>note(e.message));};
 function setView(next){
-  $('listening-workspace').hidden=next!=='talk';
+  if(guestMode&&next==='listen')next='talk';
+  // 专属链接没有“记录通话”页，长辈的旁听入口仍在聊天页里。
+  $('listening-workspace').hidden=guestMode?next!=='talk':next!=='listen';
   view=next;$('book-panel').hidden=view!=='read';$('interview-panel').hidden=view!=='talk';$('my-book-panel').hidden=view!=='book';
-  $('narrator-nav').hidden=view==='read';$('narrator-actions').hidden=view==='read';
-  document.body.classList.toggle('simple',guestMode||view!=='read');$('family-view').hidden=guestMode||view==='read';
+  $('narrator-nav').hidden=view==='read'||view==='listen';$('narrator-actions').hidden=view==='read'||view==='listen';
+  document.body.classList.toggle('simple',guestMode||view==='talk'||view==='book');document.body.classList.toggle('listen-mode',view==='listen');
+  $('family-view').hidden=guestMode||view==='read'||view==='listen';
   document.querySelector('h1').textContent=profile?profile.name+'的人生之书':'一起聊聊从前';
-  document.querySelector('.intro').textContent=view==='read'?'原声、原文、事实与故事，分别保存。':'您慢慢讲，我认真听。';
+  document.querySelector('.intro').textContent=view==='read'?'原声、原文、事实与故事，分别保存。':view==='listen'?`和${profile?.name||'长辈'}视频时，把这台设备放在旁边，AI 会记下你们说的话。`:'您慢慢讲，我认真听。';
   $('interviewer-label').textContent=(profile?.interviewer_name||'拾光')+' · AI';
-  $('talk-view').className=view==='talk'?'':'secondary';$('read-view').className=view==='read'?'':'secondary';
+  $('listen-view').className=view==='listen'?'':'secondary';$('talk-view').className=view==='talk'?'':'secondary';$('read-view').className=view==='read'?'':'secondary';
   $('chat-tab').setAttribute('aria-pressed',String(view==='talk'));$('my-book-tab').setAttribute('aria-pressed',String(view==='book'));
   $('chat-tab').className=view==='talk'?'':'secondary';$('my-book-tab').className=view==='book'?'':'secondary';
   if(view==='book'&&profile)narrator.book().catch(e=>note(e.message));
   if(!guestMode){const url=new URL(location.href);url.searchParams.set('view',view);window.history.replaceState(null,'',url);}
 }
-$('talk-view').onclick=()=>setView('talk');$('read-view').onclick=()=>setView('read');
+$('listen-view').onclick=()=>setView('listen');$('talk-view').onclick=()=>setView('talk');$('read-view').onclick=()=>setView('read');
 async function refreshGuest(){
   profile=await api('/life/guest');provider={configured:profile.configured};
   document.body.classList.add('guest','signed-in');$('workspace').hidden=false;$('profile-work').hidden=false;$('login-panel').hidden=true;
