@@ -10,6 +10,8 @@ export class ListeningCall extends VoiceCall {
   async prepare(){
     await super.prepare();
     if(this.stopping||this.closed){this.stream?.getTracks().forEach(t=>t.stop());return;}
+    // 收音条用的麦克风电平；只读输入，不改变送去识别的音频。
+    if(this.context.createAnalyser&&this.input){this.analyser=this.context.createAnalyser();this.analyser.fftSize=1024;this.input.connect(this.analyser);this.samples=new Float32Array(this.analyser.fftSize);}
     this.context.onstatechange=()=>{
       if(!this.closed&&!this.stopping&&this.context.state!=='running'){
         this.onEvent({type:'notice',message:'页面或麦克风已暂停，正在保留已收到的录音。'});this.stop();
@@ -49,6 +51,11 @@ export class ListeningCall extends VoiceCall {
     try{ws.close();}catch{}
   }
   partLost(){this.closePart();this.onEvent({type:'disconnected'});}
+  level(){
+    if(!this.analyser||this.closed)return null;
+    this.analyser.getFloatTimeDomainData(this.samples);let sum=0;for(const v of this.samples)sum+=v*v;
+    return 10*Math.log10(sum/this.samples.length+1e-12);
+  }
   // 录音中的声音标注和 AI 笔记开关；只发给已就绪的当前这一段。
   sendControl(data){if(this.ready&&this.ws?.readyState===WebSocket.OPEN)this.ws.send(JSON.stringify(data));}
   maxBuffered(){return 640000;} // 旁听不要求实时，容忍约 20 秒上传积压再换一段，减少分段。
@@ -66,6 +73,7 @@ export class ListeningCall extends VoiceCall {
   dispose(){
     const ws=this.ws;
     if(ws){ws.onopen=ws.onmessage=ws.onerror=ws.onclose=null;}
+    this.analyser?.disconnect();
     super.dispose();
   }
 }

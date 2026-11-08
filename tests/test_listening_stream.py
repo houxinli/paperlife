@@ -462,57 +462,25 @@ class LiveAssistTests(unittest.IsolatedAsyncioTestCase):
                 item.stop()
         return client
 
-    async def test_live_labels_become_the_first_attribution_version(self):
-        from paperlife.lifebook.listening_store import detail
-
-        labels = {
-            'type': 'labels',
-            'participants': PEOPLE,
-            'labels': {'voice1': 'subject', 'voice2': 'me', 'voice9': 'me'},
-        }
-        client = await self.record([labels])
-        saved = [e for e in client.sent if e['type'] == 'saved' and 'recognition_status' in e]
-        self.assertTrue(saved[-1]['labels_saved'])
-        record = detail(self.store, self.s['id'])
-        self.assertEqual(record['session']['version'], 1)
-        # 最终识别里没有的声音组不保存；主体已由家人标注，素材可以进入整理。
-        self.assertEqual(
-            {s['id']: s['participant_id'] for s in record['speakers']}, {'voice1': 'subject', 'voice2': 'me'}
-        )
-        self.assertFalse(record['identity_confirmation_required'])
-        # 原始识别不变，归属是追加的人工版本。
-        self.assertEqual([s['text'] for s in record['original_segments']], [s['text'] for s in TWO_VOICES])
-
-    async def test_invalid_labels_and_guest_labels_are_ignored_without_stopping(self):
-        from paperlife.lifebook.listening_store import detail, initialize
-
-        bad = {'type': 'labels', 'participants': PEOPLE, 'labels': {'voice1': 'nobody'}}
-        client = await self.record([bad])
-        self.assertEqual(detail(self.store, self.s['id'])['session']['version'], 0)
-        self.assertEqual(client.sent[-1]['status'], 'ended')
-        self.assertFalse(client.sent[-2]['labels_saved'])
-
-        self.s = self.store.create_session(self.p['id'], -7, '虚构长辈自己录')
-        initialize(self.store, self.s['id'], [])
-        self.s = self.store.session(self.s['id'])
-        await self.record([{'type': 'labels', 'participants': PEOPLE, 'labels': {'voice1': 'subject'}}])
-        self.assertEqual(detail(self.store, self.s['id'])['session']['version'], 0)
-
-    async def test_notes_use_live_names_skip_known_points_and_stay_off_the_archive(self):
+    async def test_notes_skip_known_points_and_stay_off_the_archive(self):
         calls = []
 
-        async def notes(store, subject, segments, names, known, timeout):
+        async def notes(store, subject, segments, known, timeout):
             calls.append(
-                {'subject': subject, 'names': dict(names), 'known': list(known), 'texts': [s['text'] for s in segments]}
+                {
+                    'subject': subject,
+                    'known': list(known),
+                    'texts': [s['text'] for s in segments],
+                    'named': all('name' in s for s in segments),
+                }
             )
             return {
                 'points': [{'text': '虚构长辈说那年住在河边', 'speaker': '虚构长辈'}],
                 'questions': [{'text': '河边的房子是什么样的？'}],
             }
 
-        labels = {'type': 'labels', 'participants': PEOPLE, 'labels': {'voice1': 'subject'}}
         client = await self.record(
-            [labels, {'type': 'notes', 'enabled': True}],
+            [{'type': 'notes', 'enabled': True}],
             client=lambda messages: WaitingClient(messages, 'listening_notes'),
             notes=notes,
         )
@@ -520,7 +488,7 @@ class LiveAssistTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[0]['points'][0]['text'], '虚构长辈说那年住在河边')
         self.assertEqual(events[0]['questions'][0]['text'], '河边的房子是什么样的？')
         self.assertEqual(calls[0]['subject'], '虚构主体')
-        self.assertEqual(calls[0]['names'], {'voice1': '虚构长辈'})
+        self.assertTrue(calls[0]['named'])
         self.assertIn('虚构：后来呢？', calls[0]['texts'])
         self.assertEqual(client.sent[-1]['status'], 'ended')
         # 笔记不写进档案：识别原文和转写里都没有笔记内容。
@@ -553,6 +521,63 @@ class LiveAssistTests(unittest.IsolatedAsyncioTestCase):
 
         await self.record([], notes=notes)
         self.assertEqual(calls, [])
+
+
+def tone(seconds, near):
+    """虚构合成：“旁边”是高频丰富的噪声，“那头”是只有低频的正弦，模拟通话编码与扬声器削掉高频。"""
+    import numpy as np
+
+    count = int(seconds * 16000)
+    if near:
+        values = np.random.default_rng(1).normal(0, 3000, count)
+    else:
+        values = 3000 * np.sin(2 * np.pi * 300 * np.arange(count) / 16000)
+    return np.clip(values, -32768, 32767).astype('<i2').tobytes()
+
+
+class SideTests(unittest.IsolatedAsyncioTestCase):
+    asyncSetUp = StreamTests.asyncSetUp
+    asyncTearDown = StreamTests.asyncTearDown
+
+    async def test_transcript_carries_side_changes_and_final_suggestion_is_saved(self):
+        from paperlife.lifebook import listening_sides
+        from paperlife.lifebook.listening_stream import listen
+
+        pattern = [True, False, True, False, True, False, True]
+        audio = b''.join(tone(0.65, near) for near in pattern)
+        segments = [
+            {'id': f's{i}', 'speaker_id': '1', 'text': f'虚构第{i}句', 'start_ms': i * 650, 'end_ms': i * 650 + 650}
+            for i in range(len(pattern))
+        ]
+        provider = ScriptedProvider([segments[:2]], segments)
+
+        @asynccontextmanager
+        async def connect(_):
+            yield provider
+
+        # 先把音频送完，再让供应商给出识别快照，确保实时归边时音频已在内存里。
+        class AudioFirst(Client):
+            async def receive(self):
+                await self.ready.wait()
+                if self.messages:
+                    return self.messages.pop(0)
+                await asyncio.sleep(0.05)
+                return STOP
+
+        packets = [{'type': 'websocket.receive', 'bytes': audio[i : i + 6400]} for i in range(0, len(audio), 6400)]
+        client = AudioFirst(packets)
+        with patch('paperlife.lifebook.listening_stream.connect_asr', connect):
+            await asyncio.wait_for(listen(client, self.store, self.s, self.p, authorize=lambda: True), 5)
+        live = [e for e in client.sent if e['type'] == 'listening_transcript']
+        merged = {}
+        for event in live:
+            merged.update(event['sides'])
+        self.assertEqual(live[0]['names'], {'far': '虚构主体', 'near': '我'})
+        self.assertEqual(merged['s0'].rstrip('?'), 'near')
+        self.assertEqual(merged['s1'].rstrip('?'), 'far')
+        saved = listening_sides.stored(self.store, self.s['id'])
+        self.assertTrue(saved['separated'])
+        self.assertEqual(saved['sides'], {f's{i}': 'near' if near else 'far' for i, near in enumerate(pattern)})
 
 
 if __name__ == '__main__':

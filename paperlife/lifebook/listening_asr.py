@@ -380,6 +380,8 @@ async def connect_asr(store):
                 'enable_itn': False,
                 'enable_punc': True,
                 'enable_ddc': False,
+                # 默认停顿 800ms 才断句，一问一答常被切成同一句、两个人的声音混在一起；500ms 断得更细。
+                'end_window_size': 500,
             },
         }
         try:

@@ -1,13 +1,13 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="referrer" content="no-referrer"><meta name="theme-color" content="#f4efe5"><title>拾光 · 人生之书</title><link rel="stylesheet" href="style.css"></head>
 <body><header><a class="brand" href="./">拾光<span>人生之书</span></a><div id="identity"></div></header>
-<main><button id="family-view" class="secondary family-switch" hidden>家人整理入口</button><div class="eyebrow">把平凡日子，慢慢讲成一本书</div><h1>总有一些故事，<br>值得再听一次。</h1><p class="intro">和 AI 随便聊聊今天的小事。说四川话也可以，想留下的故事让家人之后一起整理。</p>
+<main><button id="family-view" class="secondary family-switch" hidden>← 回到家人页面</button><div class="eyebrow">把平凡日子，慢慢讲成一本书</div><h1>总有一些故事，<br>值得再听一次。</h1><p class="intro">和 AI 随便聊聊今天的小事。说四川话也可以，想留下的故事让家人之后一起整理。</p>
 <p id="notice" role="status" aria-live="polite"></p>
 <section id="login-panel" hidden class="card"><h2>回到家人的故事里</h2><form id="login-form"><label>账号<input id="username" autocomplete="username" required></label><label>密码<input id="password" type="password" autocomplete="current-password" required></label><button>登录</button><p class="muted">使用已有的 Paperlife 账号。新成员请联系档案所有者授权。</p></form><details><summary>手机号登录</summary><form id="sms-form"><label>手机号（含+86）<input id="sms-phone" type="tel" placeholder="+86" autocomplete="tel" required></label><button type="button" id="sms-send" class="secondary" disabled>发送验证码</button><label>验证码<input id="sms-code" inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code" required></label><p id="sms-note" class="muted"></p><button>验证并登录</button></form></details></section>
 <div id="workspace" hidden>
 <div class="toolbar"><label>正在记录谁的故事<select id="profiles"></select></label><button id="new-profile" class="secondary">＋ 新建档案</button></div>
 <div id="profile-work" hidden>
-<nav id="view-tabs" class="view-tabs"><button id="talk-view">讲我的故事</button><button id="read-view" class="secondary">读与整理</button></nav>
+<nav id="view-tabs" class="view-tabs"><button id="listen-view">记录通话</button><button id="talk-view" class="secondary">AI 陪聊</button><button id="read-view" class="secondary">读与整理</button></nav>
 <nav id="narrator-nav" class="narrator-nav" aria-label="我的故事"><button id="chat-tab" aria-pressed="true">聊天</button><button id="my-book-tab" class="secondary" aria-pressed="false">我的人生之书</button></nav>
 <section id="interview-panel" class="card interview chat-panel">
 <div class="interview-options" hidden><input id="topic" value="" maxlength="200" aria-label="聊天话题"></div><div id="orb" hidden aria-hidden="true"><span>拾</span></div>

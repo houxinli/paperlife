@@ -13,7 +13,8 @@ def segment(i, speaker, text):
 
 
 class NotesTests(unittest.TestCase):
-    def test_output_shape_is_bounded_and_trimmed(self):
+    def test_output_is_clipped_instead_of_rejected(self):
+        # 真实通话里笔记 4 次全失败；多写、写长都截掉，不整条拒绝。
         good = {
             'points': [
                 {'text': ' 虚构长辈说那年住在河边 ', 'speaker': '虚构长辈'},
@@ -29,23 +30,29 @@ class NotesTests(unittest.TestCase):
             },
         )
         self.assertEqual(notes.validate({}), {'points': [], 'questions': []})
-        bad = [
-            [],
-            {'points': 'x'},
-            {'points': [{'text': ''}]},
-            {'points': [{'text': '虚构'}] * 7},
-            {'questions': [{'text': '虚构？'}] * 4},
-            {'questions': [{'text': '长' * 201}]},
-            {'points': [{'text': '虚构', 'speaker': 3}]},
-        ]
-        for value in bad:
+        messy = {
+            'points': [{'text': ''}, 'x', {'text': '虚构', 'speaker': 3}] + [{'text': f'虚构{i}'} for i in range(10)],
+            'questions': [{'text': '长' * 250}] * 5,
+        }
+        result = notes.validate(messy)
+        self.assertEqual(len(result['points']), notes.MAX_POINTS)
+        self.assertEqual(result['points'][0], {'text': '虚构'})
+        self.assertEqual(len(result['questions']), notes.MAX_QUESTIONS)
+        self.assertEqual(len(result['questions'][0]['text']), 200)
+        for value in ([], {'points': 'x'}, {'questions': {}}):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 notes.validate(value)
 
     def test_material_uses_live_names_recent_text_and_known_points(self):
-        segments = [segment(i, 'voice1' if i % 2 else 'voice2', f'虚构第{i}句' + '。' * 300) for i in range(30)]
+        segments = [
+            {
+                **segment(i, 'voice1' if i % 2 else 'voice2', f'虚构第{i}句' + '。' * 300),
+                'name': '虚构长辈' if i % 2 else None,
+            }
+            for i in range(30)
+        ]
         segments.append(segment(30, 'unknown', '虚构：听不清是谁'))
-        text = notes.material('虚构主体', segments, {'voice1': '虚构长辈'}, [f'要点{i}' for i in range(30)])
+        text = notes.material('虚构主体', segments, [f'要点{i}' for i in range(30)])
         payload = json.loads(text.split('<material_data>\n', 1)[1].split('\n</material_data>', 1)[0])
         self.assertEqual(payload['subject'], '虚构主体')
         # 只带最近的文字，最后一句一定在；没标注的声音不猜名字。
@@ -64,7 +71,7 @@ class NotesTests(unittest.TestCase):
             return validate({'points': [], 'questions': [{'text': '虚构追问？'}]}), {}
 
         with patch.object(notes, 'generate_json', fake):
-            result = asyncio.run(notes.live_notes(object(), '虚构主体', [segment(1, 'voice1', '虚构')], {}, [], 30))
+            result = asyncio.run(notes.live_notes(object(), '虚构主体', [segment(1, 'voice1', '虚构')], [], 30))
         self.assertEqual(result['questions'], [{'text': '虚构追问？'}])
         self.assertEqual(seen['role'], 'extractor')
         self.assertIs(seen['instruction'], notes.RULES)

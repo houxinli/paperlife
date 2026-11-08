@@ -7,6 +7,8 @@ from .listening_asr import MAX_DURATION_MS
 from .materials import MaterialError, ConflictError
 
 IDENT = re.compile(r'^[A-Za-z0-9_-]{1,80}$')
+# far/near 是按“通话那头 / 手机旁边”确认时用的声音组。
+GROUP_LABELS = {'unknown': '未知声音', 'far': '通话那头', 'near': '手机旁边'}
 
 
 def validate_participants(participants):
@@ -157,7 +159,7 @@ def detail(store, sid, can_edit=False, version=None, db=None):
             'session': session,
             'participants': participants,
             'speakers': [
-                {'id': g, 'label': ('未知声音' if g == 'unknown' else f'声音组 {g}'), 'participant_id': bindings.get(g)}
+                {'id': g, 'label': GROUP_LABELS.get(g, f'声音组 {g}'), 'participant_id': bindings.get(g)}
                 for g in sorted(groups)
             ],
             'segments': segments,

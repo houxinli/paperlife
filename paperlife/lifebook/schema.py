@@ -86,7 +86,14 @@ def _indexes_and_job_session(db):
     ''')
 
 
-MIGRATIONS = [_baseline, _retire_legacy_queue, _indexes_and_job_session]
+def _listening_sides(db):
+    # 旁听两端认人的建议（按句“通话那头 / 手机旁边”），由原声算出，可重算；不是声纹。
+    db.execute(
+        'CREATE TABLE IF NOT EXISTS listening_sides(session TEXT PRIMARY KEY, data TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)'
+    )
+
+
+MIGRATIONS = [_baseline, _retire_legacy_queue, _indexes_and_job_session, _listening_sides]
 
 
 def version(db):

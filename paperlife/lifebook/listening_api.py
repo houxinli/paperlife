@@ -3,7 +3,7 @@
 from fastapi import Depends, HTTPException, Request
 from pydantic import BaseModel, Field, StrictBool
 from .materials import MaterialError, ConflictError
-from . import listening_store
+from . import listening_sides, listening_store
 
 
 class Participant(BaseModel):
@@ -74,6 +74,12 @@ def install_listening(router, store, current_user, access, issue_ticket):
             raise HTTPException(429, '今天已录过很多次，请明天继续，或联系家人')
         return create(link['profile'], uid, data, link_id=link['id'])
 
+    def with_sides(data):
+        # 定稿后附上两端认人的建议；旧录音第一次查看时由原声补算。
+        if data['recognition_status'] in ('complete', 'incomplete'):
+            data['suggestion'] = listening_sides.suggestion(store, data['session']['id'], data['original_segments'])
+        return data
+
     def check(ident, user, edit=False):
         s = access.session(ident, user, edit=edit)
         if s['mode'] != 'listening':
@@ -84,7 +90,7 @@ def install_listening(router, store, current_user, access, issue_ticket):
     def get(ident: str, user=Depends(current_user)):
         s = check(ident, user)
         p = access.profile(s['profile'], user)
-        return translate(listening_store.detail, store, ident, p['role'] != 'reader')
+        return with_sides(translate(listening_store.detail, store, ident, p['role'] != 'reader'))
 
     @router.get('/listening/sessions/{ident}/versions/{version}')
     def get_version(ident: str, version: int, user=Depends(current_user)):
@@ -107,11 +113,11 @@ def install_listening(router, store, current_user, access, issue_ticket):
         from .editor_jobs import enqueue_session
 
         enqueue_session(store, ident)
-        return result
+        return with_sides(result)
 
     @router.get('/guest/listening/{ident}')
     def guest_get(ident: str, link=Depends(access.guest)):
         s = store.session(ident)
         if not s or s['profile'] != link['profile'] or s['mode'] != 'listening':
             raise HTTPException(404, '旁听记录不存在或未获授权')
-        return translate(listening_store.detail, store, ident, False)
+        return with_sides(translate(listening_store.detail, store, ident, False))
