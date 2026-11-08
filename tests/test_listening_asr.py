@@ -162,6 +162,7 @@ class ListeningASRTests(unittest.TestCase):
         self.assertTrue(config['request']['enable_nonstream'])
         self.assertEqual(config['request']['result_type'], 'full')
         self.assertFalse(config['request']['enable_ddc'])
+        self.assertEqual(config['request']['end_window_size'], 500)
         self.assertNotIn('fictional-secret', json.dumps(config))
         self.assertEqual(audio_frame[:4], b'\x11\x20\x01\x00')
         self.assertEqual(gzip.decompress(audio_frame[8:]), b'\x01\x00' * 3200)

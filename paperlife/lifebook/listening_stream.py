@@ -6,11 +6,11 @@ import logging
 import time
 import wave
 from contextlib import suppress
+from . import listening_sides
 from .listening_asr import MAX_DURATION_MS, connect_asr
 from .listening_gain import AutoGain
 from .listening_notes import live_notes
-from .listening_store import IDENT, annotate, detail, normalized_segments, save_recognition, validate_participants
-from .materials import MaterialError
+from .listening_store import detail, normalized_segments, save_recognition
 
 MAX_SECONDS = MAX_DURATION_MS // 1000
 FINAL_TIMEOUT = 8
@@ -18,8 +18,7 @@ FINAL_TIMEOUT = 8
 SNAPSHOT_SECONDS = 5
 # 上游短暂变慢时缓冲约 30 秒网页音频（每包 20ms），超过才中断。
 QUEUE_PACKETS = 1500
-# 控制消息包含录音中手动标注的参与者名单，最多 30 人。
-CONTROL_LIMIT = 8000
+CONTROL_LIMIT = 1000
 # AI 实时笔记：约每分钟一次，新增识别文字太少就跳过；一次调用最多等这么久。
 NOTES_SECONDS = 60
 NOTES_MIN_CHARS = 60
@@ -45,10 +44,11 @@ async def listen(client, store, session, profile, authorize=None):
     checked_at = None
     permitted = False
     helpers = []
-    # 录音中由家人手动标注的声音身份（专属链接的长辈不能修改身份，忽略）；收尾时作为第一版归属保存。
-    labels = {'participants': None, 'bindings': {}}
-    member = session['user'] > 0
     notes = {'enabled': False, 'off': False, 'chars': 0, 'known': []}
+    # 实时两端归边：通话那头默认是档案主体，旁边是“我”；定稿后按整段原声重算并保存为建议。
+    live = listening_sides.Live()
+    sides = {}
+    side_names = {'far': profile['name'], 'near': '我'}
 
     def allowed():
         # 撤权最迟一秒生效，与 guard 的节奏一致；不为每个 20ms 音频包查一次库。
@@ -70,28 +70,9 @@ async def listen(client, store, session, profile, authorize=None):
     async def ending(reason):
         await emit({'type': 'ending', 'session': sid, 'reason': reason})
 
-    def remember_labels(control):
-        # 格式不对只忽略这一次标注，不能因此中断录音。
-        try:
-            people = validate_participants(control.get('participants'))
-            ids = {p['id'] for p in people}
-            raw = control.get('labels')
-            if not isinstance(raw, dict) or len(raw) > 50:
-                raise MaterialError('声音标注无效')
-            bindings = {}
-            for speaker, pid in raw.items():
-                if not isinstance(speaker, str) or not IDENT.fullmatch(speaker) or (pid is not None and pid not in ids):
-                    raise MaterialError('声音标注无效')
-                if pid is not None:
-                    bindings[speaker] = pid
-        except MaterialError:
-            log.warning('listening labels ignored (session=%s)', sid)
-            return
-        labels['participants'], labels['bindings'] = people, bindings
-
-    def names():
-        people = {p['id']: p['name'] for p in labels['participants'] or []}
-        return {speaker: people[pid] for speaker, pid in labels['bindings'].items() if pid in people}
+    def named(segments):
+        # 给 AI 笔记的说话人：已归边的句子用名字，拿不准的照样当作声音组。
+        return [{**s, 'name': side_names.get(sides.get(s['id'], '').rstrip('?'))} for s in segments]
 
     async def take_notes():
         # 只给正在通话的家人看的提示，不入档案；任何失败都不影响录音和识别。
@@ -102,10 +83,12 @@ async def listen(client, store, session, profile, authorize=None):
                 continue
             notes['chars'] = chars
             try:
-                result = await live_notes(store, profile['name'], latest, names(), notes['known'], NOTES_TIMEOUT)
+                result = await live_notes(store, profile['name'], named(latest), notes['known'], NOTES_TIMEOUT)
             except Exception as error:
-                notes['off'] = str(error) == 'provider_unconfigured'
-                log.warning('listening notes failed with %s (session=%s)', type(error).__name__, sid)
+                code = str(error) if type(error) is ValueError and str(error).isidentifier() else type(error).__name__
+                notes['off'] = code == 'provider_unconfigured'
+                # 只记录本模块的固定错误码或异常类型，不记录对话内容。
+                log.warning('listening notes failed: %s (session=%s)', code, sid)
                 message = '文本模型尚未配置，AI 笔记已关闭。' if notes['off'] else 'AI 笔记这次没有生成，稍后会再试。'
                 await emit({'type': 'listening_notes', 'error': message})
                 continue
@@ -140,6 +123,7 @@ async def listen(client, store, session, profile, authorize=None):
                             raise ValueError('Audio rate or duration exceeded')
                         # 先调到正常音量再保存和识别：外放旁边的原始电平太低，识别会漏字，回听也听不清。
                         data = level.process(data)
+                        live.add(data)
                         mic.writeframes(data)
                         audio_bytes = new_total
                         # 写入先于发送；供应商慢/失败时已收到的完整混合音轨仍在。
@@ -154,8 +138,6 @@ async def listen(client, store, session, profile, authorize=None):
                             return
                         if control.get('type') == 'notes':
                             notes['enabled'] = control.get('enabled') is True
-                        elif control.get('type') == 'labels' and member:
-                            remember_labels(control)
 
             receiver = asyncio.create_task(receive_client())
             tasks.append(receiver)
@@ -176,7 +158,7 @@ async def listen(client, store, session, profile, authorize=None):
                             queue.task_done()
 
                 async def receive_provider():
-                    nonlocal latest, terminal, snapshot_at, shown
+                    nonlocal latest, terminal, snapshot_at, shown, sides
                     async for event in upstream.events():
                         if not allowed():
                             raise ValueError('Access revoked')
@@ -191,6 +173,10 @@ async def listen(client, store, session, profile, authorize=None):
                             (i for i, (old, new) in enumerate(zip(shown, latest)) if old != new),
                             min(len(shown), len(latest)),
                         )
+                        # 两端归边只下发有变化的句子（分界随录音自适应，早先的句子也可能改边）。
+                        current = live.update(latest)
+                        changed = {k: v for k, v in current.items() if sides.get(k) != v}
+                        sides = current
                         await emit(
                             {
                                 'type': 'listening_transcript',
@@ -198,6 +184,8 @@ async def listen(client, store, session, profile, authorize=None):
                                 'segments': latest[start:],
                                 'total': len(latest),
                                 'final': terminal,
+                                'sides': changed,
+                                'names': side_names,
                             }
                         )
                         shown = latest
@@ -262,15 +250,12 @@ async def listen(client, store, session, profile, authorize=None):
         with suppress(Exception):
             save_recognition(store, sid, latest, recognition_status)
         store.finish_session(sid, status)
-        labels_saved = False
-        # 只保存最终识别里确实出现的声音组；之后仍可在录音档案里修改，修改会追加新版本。
-        bindings = {k: v for k, v in labels['bindings'].items() if k in {s['speaker_id'] for s in latest}}
-        if labels['participants'] and bindings and recognition_status in ('complete', 'incomplete'):
+        if recognition_status in ('complete', 'incomplete'):
             try:
-                annotate(store, sid, 0, labels['participants'], bindings, {}, session['user'])
-                labels_saved = True
+                # 读整段原声做 FFT，放到线程里，不占共享事件循环。
+                await asyncio.to_thread(listening_sides.refresh, store, sid, latest)
             except Exception as error:
-                log.warning('listening labels not saved: %s (session=%s)', type(error).__name__, sid)
+                log.warning('listening sides not saved: %s (session=%s)', type(error).__name__, sid)
         from .editor_jobs import enqueue_session
 
         enqueue_session(store, sid)
@@ -280,7 +265,6 @@ async def listen(client, store, session, profile, authorize=None):
                 'session': sid,
                 'seconds': round(audio_bytes / 32000, 1),
                 'recognition_status': recognition_status,
-                'labels_saved': labels_saved,
             }
         )
         await emit({'type': 'ended', 'session': sid, 'status': status, 'recognition_status': recognition_status})
